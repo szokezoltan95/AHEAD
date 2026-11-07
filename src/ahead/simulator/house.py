@@ -112,6 +112,7 @@ class House:
         self.return_c: float | None = None
         self.flow_l_min = 0.0
         self._source_state = {name: _SourceState() for name in self.sources}
+        self._source_heat_kw = dict.fromkeys(self.sources, 0.0)
         self.elapsed_s = 0.0
         self.totals = Totals()
 
@@ -194,6 +195,10 @@ class House:
     def source_starts(self) -> dict[str, int]:
         return {name: state.starts for name, state in self._source_state.items()}
 
+    @property
+    def source_heat_kw(self) -> dict[str, float]:
+        return self._source_heat_kw.copy()
+
     def advance(
         self,
         duration_s: float,
@@ -263,6 +268,7 @@ class House:
                 limit_kw = source.max_heat_kw
             requested_kw = min(request * source.max_heat_kw, limit_kw)
             delivered = self._source_output(source, requested_kw, limit_kw, name in available_sources)
+            self._source_heat_kw[name] = delivered
             if source.direct_zone is None:
                 water_flow += delivered
             else:

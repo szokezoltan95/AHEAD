@@ -2,6 +2,7 @@
 
 from bisect import bisect_right
 from dataclasses import dataclass
+from itertools import count
 from math import isfinite
 from pathlib import Path
 from random import Random
@@ -54,12 +55,13 @@ class Scenario:
     def setpoints_c(self) -> dict[str, float]:
         return {name: zone.setpoint_c for name, zone in self.house.zones.items()}
 
-    def run(self, controller: Controller) -> Iterator[Sample]:
+    def run(self, controller: Controller, *, continuous: bool = False) -> Iterator[Sample]:
         if self.house.elapsed_s:
             raise ValueError("Reload the scenario before running another experiment")
         random = Random(self.seed)
         times, weather = zip(*self.profile)
-        for start_s in range(0, self.duration_s, self.step_s):
+        starts = count(0, self.step_s) if continuous else range(0, self.duration_s, self.step_s)
+        for start_s in starts:
             profile_s = start_s if self.period_s is None else start_s % self.period_s
             conditions = weather[bisect_right(times, profile_s) - 1]
             faults = {fault.target: fault for fault in self.faults if fault.active(start_s)}
@@ -86,7 +88,9 @@ class Scenario:
                 gas_price_kwh=conditions.gas_price_kwh,
             )
             plan = controller.decide(observation)
-            end_s = min(self.duration_s, start_s + self.step_s)
+            end_s = start_s + self.step_s
+            if not continuous:
+                end_s = min(self.duration_s, end_s)
             self.house.advance(end_s - start_s, conditions, plan, available)
             yield Sample(
                 start_s, end_s, observation, plan, self.house.indoor_c,

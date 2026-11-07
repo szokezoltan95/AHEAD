@@ -1,0 +1,28 @@
+services:
+  mqtt:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    volumes:
+      - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  simulator:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - mqtt
+    command: ["/scenario.toml", "--host", "mqtt", "--house-id", "${AHEAD_HOUSE_ID:-house}"]
+    volumes:
+      - "${AHEAD_SCENARIO:-./scenarios/hybrid_house.toml}:/scenario.toml:ro"
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    restart: unless-stopped
+    depends_on:
+      - mqtt
+    ports:
+      - "127.0.0.1:${AHEAD_HA_PORT:-8123}:8123"
+    volumes:
+      - homeassistant-config:/config
+
+volumes:
+  homeassistant-config:

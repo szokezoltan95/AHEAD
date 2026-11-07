@@ -4,7 +4,7 @@
 
 AHEAD is an early-stage research project on self-adaptive control of building heating. It will investigate whether a controller can learn how an unfamiliar building heats up and cools down from routine measurements, then use that model to coordinate its heating equipment while maintaining comfort and respecting equipment limits.
 
-> **Project status:** The shared controller interface, baseline thermostat, and whole-house heating simulator are runnable. Adaptive algorithms and the Home Assistant integration are planned.
+> **Project status:** The Compose test bench runs a real-time whole-house simulator that Home Assistant can control via MQTT. The adaptive AHEAD controller and its HAOS integration are planned.
 
 ## Research scope
 
@@ -26,7 +26,29 @@ AHEAD is an early-stage research project on self-adaptive control of building he
 
 A standard AHEAD deployment is intended to require only the AHEAD integration on HAOS. The control engine runs within Home Assistant Core, with its dependencies installed by Home Assistant. Simulation and benchmark infrastructure are separate research tools. The deployed controller requires no separate AHEAD service or cloud backend.
 
-## Run the whole-house simulator
+## Run the live Home Assistant test bench
+
+Install Docker with Compose and run this from the repository root.
+
+```bash
+docker compose up -d --build
+```
+
+Compose starts the simulator, an MQTT broker, and Home Assistant Container. The simulator advances one simulated second per wall-clock second and publishes fresh readings every two seconds. It runs until stopped. The example repeats its daily weather and tariff profile, and its scheduled faults occur once at the specified elapsed times.
+
+1. Open [Home Assistant](http://localhost:8123) and complete onboarding.
+2. In **Settings → Devices & services → Add integration**, select **MQTT**. Enter broker host `mqtt` and port `1883`. Leave the username and password blank. The broker is on the Compose network and its port is unpublished.
+3. Open the discovered **AHEAD house** device. Set **Kitchen valve** to 100% and switch **Gas Boiler request** on. Watch **Supply water temperature**, **Gas Boiler heat output**, and **Kitchen temperature**. Heat output and temperature evolve according to the model. You can use the same entities in Home Assistant automations.
+
+The device exposes room and outdoor temperature sensors, supply and return temperatures, loop flow, tariffs, energy use, and heat output. On/off sources use switches. Modulating sources and valves use percentage controls. All requests start at zero and are set by Home Assistant. An equipment outage makes the affected source control unavailable, while sensor dropouts appear as unknown readings.
+
+Use `docker compose logs -f simulator` to see connections and received requests. Use `docker compose down` to stop the bench. Home Assistant keeps its configuration in a Docker volume. The simulated house starts from the scenario's initial state when the simulator restarts.
+
+Set `AHEAD_SCENARIO` in a Compose `.env` file to mount a different TOML scenario. The web UI binds to loopback. For a remote Docker host, forward its Home Assistant port to your computer with SSH.
+
+The Compose test bench hosts virtual equipment for development and experiments. The planned AHEAD integration will run the controller locally on HAOS when deployed to a real home.
+
+## Run an offline benchmark
 
 With Python 3.12 or later, run from the repository root.
 
@@ -36,7 +58,7 @@ python -m ahead.simulator scenarios/hybrid_house.toml --csv hybrid-house.csv
 python -m unittest discover -s tests -v
 ```
 
-The example runs three winter days in a synthetic, two-storey, four-zone house. A room heat pump and a gas boiler with thermostatic radiator valves respond to the baseline controller. The scenario includes daily weather, solar gains, occupancy and appliance loads, time-varying tariffs, a room sensor dropout, an outdoor sensor bias, and a heat-pump outage.
+The offline example runs three winter days in a synthetic, two-storey, four-zone house. A room heat pump and a gas boiler with thermostatic radiator valves respond to the baseline controller. The scenario includes daily weather, solar gains, occupancy and appliance loads, time-varying tariffs, a room sensor dropout, an outdoor sensor bias, and a heat-pump outage.
 
 | Model | Implemented behaviour |
 | --- | --- |
