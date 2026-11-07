@@ -4,7 +4,7 @@
 
 AHEAD is an early-stage research project on self-adaptive control of building heating. It will investigate whether a controller can learn how an unfamiliar building heats up and cools down from routine measurements, then use that model to coordinate its heating equipment while maintaining comfort and respecting equipment limits.
 
-> **Project status:** Research and design. The controller, simulator, and Home Assistant integration are planned deliverables.
+> **Project status:** The shared controller interface, baseline thermostat, and whole-house heating simulator are runnable. Adaptive algorithms and the Home Assistant integration are planned.
 
 ## Research scope
 
@@ -25,6 +25,29 @@ AHEAD is an early-stage research project on self-adaptive control of building he
 | Physical systems | Provide a later stage of validation on real equipment where feasible. |
 
 A standard AHEAD deployment is intended to require only the AHEAD integration on HAOS. The control engine runs within Home Assistant Core, with its dependencies installed by Home Assistant. Simulation and benchmark infrastructure are separate research tools. The deployed controller requires no separate AHEAD service or cloud backend.
+
+## Run the whole-house simulator
+
+With Python 3.12 or later, run from the repository root.
+
+```bash
+python -m pip install -e .
+python -m ahead.simulator scenarios/hybrid_house.toml --csv hybrid-house.csv
+python -m unittest discover -s tests -v
+```
+
+The example runs three winter days in a synthetic, two-storey, four-zone house. A room heat pump and a gas boiler with thermostatic radiator valves respond to the baseline controller. The scenario includes daily weather, solar gains, occupancy and appliance loads, time-varying tariffs, a room sensor dropout, an outdoor sensor bias, and a heat-pump outage.
+
+| Model | Implemented behaviour |
+| --- | --- |
+| Building | Configurable rooms with separate air and fabric thermal mass, heat exchange across walls and floors, envelope losses, infiltration, and solar and internal gains |
+| Heating | Direct room heating and a shared hydronic loop with a finite thermal capacity, flow-limited radiators, valve requests, and supply and return temperatures |
+| Equipment | On/off and modulating requests, source capacity, gas efficiency, outdoor-dependent heat-pump COP, equipment availability, and minimum on/off times |
+| Experiment | TOML scenarios, seeded sensor noise, timed faults, and a CSV trace with ground truth, sensor readings, actuator requests, and cumulative energy and cost |
+
+The simulator advances the physical model between controller decisions. The controller receives sensor readings, equipment availability, and tariffs through the shared interface. The simulator records the underlying state separately so controller performance can be scored against it. Energy use includes the configured electrical appliance load. Comfort deviation is the sum of absolute room setpoint errors over time.
+
+The current model uses configurable thermal parameters for each room and a lumped water loop. Geometry-driven construction, pressure-based hydraulics, domestic hot water, and cooling are outside the current implementation. The included house and weather profiles are synthetic and have yet to be calibrated against a measured building.
 
 ## Evaluation
 
