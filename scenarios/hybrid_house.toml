@@ -1,0 +1,173 @@
+# Synthetic two-storey house. Capacities are kWh/K and conductances are kW/K.
+[simulation]
+step_s = 60
+duration_s = 259200
+profile_period_s = 86400
+sensor_noise_c = 0.06
+seed = 42
+
+[water_loop]
+capacity = 0.085
+initial_c = 22
+target_c = 49
+loss_kw_k = 0.006
+max_flow_l_min = 16
+
+# Source order is the baseline controller's dispatch priority.
+[[sources]]
+name = "living_room_heat_pump"
+fuel = "electricity"
+direct_zone = "living"
+max_heat_kw = 3.0
+efficiency = 3.3
+efficiency_per_outdoor_k = 0.09
+modulating = true
+min_on_s = 240
+min_off_s = 180
+
+[[sources]]
+name = "gas_boiler"
+fuel = "gas"
+max_heat_kw = 10
+efficiency = 0.88
+min_on_s = 120
+min_off_s = 180
+
+[[zones]]
+name = "living"
+air_capacity = 0.11
+fabric_capacity = 5.2
+air_fabric_kw_k = 0.26
+fabric_outside_kw_k = 0.11
+infiltration_kw_k = 0.046
+solar_area_m2 = 3.2
+radiator_kw_k = 0.125
+radiator_flow_l_min = 5
+base_gains_kw = 0.06
+initial_c = 19.6
+setpoint_c = 21
+
+[[zones]]
+name = "kitchen"
+air_capacity = 0.085
+fabric_capacity = 3.7
+air_fabric_kw_k = 0.23
+fabric_outside_kw_k = 0.08
+infiltration_kw_k = 0.039
+solar_area_m2 = 1.2
+radiator_kw_k = 0.125
+radiator_flow_l_min = 5
+base_gains_kw = 0.035
+initial_c = 19.8
+setpoint_c = 20
+
+[[zones]]
+name = "bedroom"
+air_capacity = 0.075
+fabric_capacity = 4.4
+air_fabric_kw_k = 0.22
+fabric_outside_kw_k = 0.10
+infiltration_kw_k = 0.028
+solar_area_m2 = 0.7
+radiator_kw_k = 0.125
+radiator_flow_l_min = 5
+initial_c = 19.1
+setpoint_c = 19.5
+
+[[zones]]
+name = "study"
+air_capacity = 0.063
+fabric_capacity = 2.9
+air_fabric_kw_k = 0.20
+fabric_outside_kw_k = 0.12
+infiltration_kw_k = 0.035
+solar_area_m2 = 1.6
+radiator_kw_k = 0.125
+radiator_flow_l_min = 5
+initial_c = 18.9
+setpoint_c = 20.5
+
+[[partitions]]
+first = "living"
+second = "kitchen"
+kw_k = 0.14
+
+[[partitions]]
+first = "living"
+second = "bedroom"
+kw_k = 0.038
+
+[[partitions]]
+first = "kitchen"
+second = "study"
+kw_k = 0.037
+
+[[partitions]]
+first = "bedroom"
+second = "study"
+kw_k = 0.085
+
+[[profile]]
+start_s = 0
+outdoor_c = -3
+appliance_kw = 0.16
+occupied_gains_kw = 0.15
+electricity_price_kwh = 0.17
+gas_price_kwh = 0.09
+
+[[profile]]
+start_s = 21600
+outdoor_c = -4
+solar_kw_m2 = 0.06
+appliance_kw = 0.4
+occupied_gains_kw = 0.3
+electricity_price_kwh = 0.27
+gas_price_kwh = 0.09
+
+[[profile]]
+start_s = 36000
+outdoor_c = 1
+solar_kw_m2 = 0.25
+appliance_kw = 0.17
+electricity_price_kwh = 0.24
+gas_price_kwh = 0.09
+
+[[profile]]
+start_s = 50400
+outdoor_c = 4
+solar_kw_m2 = 0.17
+appliance_kw = 0.18
+electricity_price_kwh = 0.24
+gas_price_kwh = 0.09
+
+[[profile]]
+start_s = 64800
+outdoor_c = 0
+appliance_kw = 0.48
+occupied_gains_kw = 0.38
+electricity_price_kwh = 0.31
+gas_price_kwh = 0.09
+
+[[profile]]
+start_s = 79200
+outdoor_c = -2
+appliance_kw = 0.18
+occupied_gains_kw = 0.15
+electricity_price_kwh = 0.17
+gas_price_kwh = 0.09
+
+[[faults]]
+target = "zone:study"
+start_s = 122400
+end_s = 126000
+
+[[faults]]
+target = "source:living_room_heat_pump"
+start_s = 165600
+end_s = 172800
+
+[[faults]]
+target = "outdoor"
+start_s = 198000
+end_s = 205200
+bias_c = 2

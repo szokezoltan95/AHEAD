@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ahead-heating"
+version = "0.1.0"
+description = "Building heating control and house simulation"
+readme = "README.md"
+requires-python = ">=3.12"
+
+[project.scripts]
+ahead-sim = "ahead.simulator.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
