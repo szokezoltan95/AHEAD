@@ -18,11 +18,13 @@ AHEAD is an early-stage research project on self-adaptive control of building he
 
 | Component | Role |
 | --- | --- |
-| Adaptive control engine | Estimates thermal dynamics, predicts the effect of control actions, and chooses equipment commands subject to comfort and equipment constraints. It is designed to run independently of Home Assistant and the simulator. |
-| Home Assistant integration | Provides the initial platform for equipment adapters, configuration, monitoring, and device commands. |
+| Adaptive control engine | Estimates thermal dynamics, predicts the effect of control actions, and chooses equipment commands subject to comfort and equipment constraints. The algorithms are packaged as a reusable Python library so they can also be exercised in simulation and tests. |
+| Home Assistant integration | Runs the full heating controller locally on Home Assistant OS (HAOS), including online learning, predictive control, and heat-source optimisation. It reads equipment and sensor entities, issues device commands, and provides configuration and monitoring in Home Assistant. |
 | Physics-based simulator | Models building heat transfer and thermal inertia, heating equipment, hydraulic flow, actuator response, and weather. Virtual devices expose the measurements and controls available in real installations while the simulator keeps its internal parameters hidden from the controller. |
-| Experiment infrastructure | Runs repeatable, containerised experiments on a proposed dedicated server. Scenarios vary building properties, weather, energy tariffs, equipment configurations, and sensor faults. |
+| Experiment infrastructure | Runs repeatable, containerised research experiments on a proposed dedicated server. Scenarios vary building properties, weather, energy tariffs, equipment configurations, and sensor faults. |
 | Physical systems | Provide a later stage of validation on real equipment where feasible. |
+
+A standard AHEAD deployment is intended to require only the AHEAD integration on HAOS. The control engine runs within Home Assistant Core, with its dependencies installed by Home Assistant. Simulation and benchmark infrastructure are separate research tools. The deployed controller requires no separate AHEAD service or cloud backend.
 
 ## Evaluation
 
