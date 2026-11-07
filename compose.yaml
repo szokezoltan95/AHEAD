@@ -10,9 +10,21 @@ services:
     restart: unless-stopped
     depends_on:
       - mqtt
-    command: ["/scenario.toml", "--host", "mqtt", "--house-id", "${AHEAD_HOUSE_ID:-house}"]
+    command:
+      - /scenario.toml
+      - --host
+      - mqtt
+      - --house-id
+      - "${AHEAD_HOUSE_ID:-house}"
+      - --console-port
+      - "8765"
+      - --project-store
+      - /data/project.json
+    ports:
+      - "127.0.0.1:${AHEAD_CONSOLE_PORT:-8765}:8765"
     volumes:
       - "${AHEAD_SCENARIO:-./scenarios/hybrid_house.toml}:/scenario.toml:ro"
+      - simulator-config:/data
 
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:stable
@@ -26,3 +38,4 @@ services:
 
 volumes:
   homeassistant-config:
+  simulator-config:

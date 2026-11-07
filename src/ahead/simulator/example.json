@@ -1,0 +1,514 @@
+{
+  "settings": {
+    "warmup_days": 1
+  },
+  "levels": [
+    {
+      "id": "ground",
+      "preset": "storey"
+    },
+    {
+      "id": "upper",
+      "preset": "storey",
+      "elevation_m": 2.7
+    }
+  ],
+  "rooms": [
+    {
+      "id": "living",
+      "preset": "conditioned",
+      "level": "ground",
+      "initial_c": 19.6,
+      "target_c": 21
+    },
+    {
+      "id": "kitchen",
+      "preset": "conditioned",
+      "level": "ground",
+      "initial_c": 19.8,
+      "target_c": 20
+    },
+    {
+      "id": "bedroom",
+      "preset": "conditioned",
+      "level": "upper",
+      "initial_c": 19.1,
+      "target_c": 19.5
+    },
+    {
+      "id": "study",
+      "preset": "conditioned",
+      "level": "upper",
+      "initial_c": 18.9,
+      "target_c": 20.5
+    },
+    {
+      "id": "hall",
+      "preset": "unheated",
+      "level": "ground",
+      "initial_c": 17,
+      "target_c": 17
+    },
+    {
+      "id": "attic",
+      "preset": "unheated",
+      "level": "upper",
+      "initial_c": 12,
+      "target_c": 12
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "living_wall",
+      "preset": "wall",
+      "room": "living",
+      "azimuth_deg": 180,
+      "area_m2": 22
+    },
+    {
+      "id": "living_floor",
+      "preset": "floor",
+      "room": "living"
+    },
+    {
+      "id": "kitchen_wall",
+      "preset": "wall",
+      "room": "kitchen",
+      "azimuth_deg": 90,
+      "area_m2": 22
+    },
+    {
+      "id": "kitchen_floor",
+      "preset": "floor",
+      "room": "kitchen"
+    },
+    {
+      "id": "bedroom_wall",
+      "preset": "wall",
+      "room": "bedroom",
+      "azimuth_deg": 270,
+      "area_m2": 22
+    },
+    {
+      "id": "study_wall",
+      "preset": "wall",
+      "room": "study",
+      "azimuth_deg": 180,
+      "area_m2": 22
+    },
+    {
+      "id": "hall_wall",
+      "preset": "wall",
+      "room": "hall",
+      "azimuth_deg": 0,
+      "area_m2": 22
+    },
+    {
+      "id": "hall_floor",
+      "preset": "floor",
+      "room": "hall"
+    },
+    {
+      "id": "living_kitchen",
+      "preset": "wall",
+      "room": "living",
+      "adjacent_room": "kitchen",
+      "boundary": "room"
+    },
+    {
+      "id": "kitchen_hall",
+      "preset": "wall",
+      "room": "kitchen",
+      "adjacent_room": "hall",
+      "boundary": "room"
+    },
+    {
+      "id": "upper_floor",
+      "preset": "floor",
+      "room": "bedroom",
+      "adjacent_room": "living",
+      "boundary": "room"
+    },
+    {
+      "id": "bedroom_study",
+      "preset": "wall",
+      "room": "bedroom",
+      "adjacent_room": "study",
+      "boundary": "room"
+    },
+    {
+      "id": "study_ceiling",
+      "preset": "ceiling",
+      "room": "study",
+      "adjacent_room": "attic",
+      "boundary": "room"
+    },
+    {
+      "id": "bedroom_ceiling",
+      "preset": "ceiling",
+      "room": "bedroom",
+      "adjacent_room": "attic",
+      "boundary": "room"
+    },
+    {
+      "id": "south_roof",
+      "preset": "roof",
+      "room": "attic",
+      "azimuth_deg": 180
+    },
+    {
+      "id": "north_roof",
+      "preset": "roof",
+      "room": "attic",
+      "azimuth_deg": 0
+    }
+  ],
+  "layers": [
+    {
+      "id": "living_wall_brick",
+      "preset": "brick",
+      "surface": "living_wall",
+      "thickness_m": 0.25
+    },
+    {
+      "id": "living_wall_eps",
+      "preset": "eps",
+      "surface": "living_wall",
+      "thickness_m": 0.15
+    },
+    {
+      "id": "living_slab",
+      "preset": "concrete",
+      "surface": "living_floor",
+      "thickness_m": 0.16
+    },
+    {
+      "id": "living_floor_insulation",
+      "preset": "xps",
+      "surface": "living_floor",
+      "thickness_m": 0.1
+    },
+    {
+      "id": "kitchen_wall_brick",
+      "preset": "brick",
+      "surface": "kitchen_wall",
+      "thickness_m": 0.25
+    },
+    {
+      "id": "kitchen_wall_eps",
+      "preset": "eps",
+      "surface": "kitchen_wall",
+      "thickness_m": 0.15
+    },
+    {
+      "id": "kitchen_slab",
+      "preset": "concrete",
+      "surface": "kitchen_floor",
+      "thickness_m": 0.16
+    },
+    {
+      "id": "kitchen_floor_insulation",
+      "preset": "xps",
+      "surface": "kitchen_floor",
+      "thickness_m": 0.1
+    },
+    {
+      "id": "bedroom_wall_brick",
+      "preset": "brick",
+      "surface": "bedroom_wall",
+      "thickness_m": 0.25
+    },
+    {
+      "id": "bedroom_wall_eps",
+      "preset": "eps",
+      "surface": "bedroom_wall",
+      "thickness_m": 0.15
+    },
+    {
+      "id": "study_wall_brick",
+      "preset": "brick",
+      "surface": "study_wall",
+      "thickness_m": 0.25
+    },
+    {
+      "id": "study_wall_eps",
+      "preset": "eps",
+      "surface": "study_wall",
+      "thickness_m": 0.15
+    },
+    {
+      "id": "hall_wall_brick",
+      "preset": "brick",
+      "surface": "hall_wall",
+      "thickness_m": 0.25
+    },
+    {
+      "id": "hall_wall_eps",
+      "preset": "eps",
+      "surface": "hall_wall",
+      "thickness_m": 0.15
+    },
+    {
+      "id": "hall_slab",
+      "preset": "concrete",
+      "surface": "hall_floor",
+      "thickness_m": 0.16
+    },
+    {
+      "id": "hall_floor_insulation",
+      "preset": "xps",
+      "surface": "hall_floor",
+      "thickness_m": 0.1
+    },
+    {
+      "id": "living_kitchen_layer",
+      "preset": "brick",
+      "surface": "living_kitchen",
+      "thickness_m": 0.15
+    },
+    {
+      "id": "kitchen_hall_layer",
+      "preset": "brick",
+      "surface": "kitchen_hall",
+      "thickness_m": 0.15
+    },
+    {
+      "id": "upper_floor_layer",
+      "preset": "concrete",
+      "surface": "upper_floor",
+      "thickness_m": 0.15
+    },
+    {
+      "id": "bedroom_study_layer",
+      "preset": "brick",
+      "surface": "bedroom_study",
+      "thickness_m": 0.15
+    },
+    {
+      "id": "study_ceiling_layer",
+      "preset": "mineral_wool",
+      "surface": "study_ceiling",
+      "thickness_m": 0.3
+    },
+    {
+      "id": "bedroom_ceiling_layer",
+      "preset": "mineral_wool",
+      "surface": "bedroom_ceiling",
+      "thickness_m": 0.3
+    },
+    {
+      "id": "south_roof_timber",
+      "preset": "timber",
+      "surface": "south_roof",
+      "thickness_m": 0.025
+    },
+    {
+      "id": "north_roof_timber",
+      "preset": "timber",
+      "surface": "north_roof",
+      "thickness_m": 0.025
+    }
+  ],
+  "windows": [
+    {
+      "id": "living_window",
+      "preset": "double_glazed",
+      "surface": "living_wall"
+    },
+    {
+      "id": "kitchen_window",
+      "preset": "double_glazed",
+      "surface": "kitchen_wall"
+    },
+    {
+      "id": "bedroom_window",
+      "preset": "double_glazed",
+      "surface": "bedroom_wall"
+    },
+    {
+      "id": "study_window",
+      "preset": "double_glazed",
+      "surface": "study_wall"
+    }
+  ],
+  "circuits": [
+    {
+      "id": "radiators",
+      "preset": "radiator_loop",
+      "target_c": 49
+    },
+    {
+      "id": "underfloor",
+      "preset": "floor_loop"
+    },
+    {
+      "id": "hot_water",
+      "preset": "hot_water_cylinder"
+    }
+  ],
+  "emitters": [
+    {
+      "id": "living",
+      "preset": "panel_radiator",
+      "room": "living",
+      "circuit": "radiators"
+    },
+    {
+      "id": "kitchen",
+      "preset": "column_radiator",
+      "room": "kitchen",
+      "circuit": "radiators"
+    },
+    {
+      "id": "bedroom",
+      "preset": "panel_radiator",
+      "room": "bedroom",
+      "circuit": "radiators"
+    },
+    {
+      "id": "study",
+      "preset": "panel_radiator",
+      "room": "study",
+      "circuit": "radiators"
+    },
+    {
+      "id": "kitchen_floor",
+      "preset": "underfloor",
+      "room": "kitchen",
+      "circuit": "underfloor"
+    }
+  ],
+  "outdoor_units": [
+    {
+      "id": "garden_unit",
+      "preset": "multi_split"
+    }
+  ],
+  "sources": [
+    {
+      "id": "gas_boiler",
+      "preset": "gas_on_off",
+      "circuit": "radiators",
+      "capacity_kw": 10
+    },
+    {
+      "id": "water_heat_pump",
+      "preset": "air_to_water",
+      "circuit": "underfloor"
+    },
+    {
+      "id": "living_room_heat_pump",
+      "preset": "indoor_split",
+      "room": "living",
+      "outdoor_unit": "garden_unit"
+    },
+    {
+      "id": "bedroom_indoor",
+      "preset": "indoor_split",
+      "room": "bedroom",
+      "outdoor_unit": "garden_unit"
+    }
+  ],
+  "solar": [
+    {
+      "id": "roof_pv",
+      "preset": "photovoltaic",
+      "surface": "south_roof"
+    },
+    {
+      "id": "water_collector",
+      "preset": "thermal_collector",
+      "surface": "south_roof",
+      "circuit": "hot_water"
+    }
+  ],
+  "weather": [
+    {
+      "id": "weather_1",
+      "preset": "period",
+      "start_s": 0,
+      "outdoor_c": -3,
+      "forecast_outdoor_c": -2,
+      "direct_kw_m2": 0,
+      "diffuse_kw_m2": 0,
+      "electricity_price": 0.17
+    },
+    {
+      "id": "weather_2",
+      "preset": "period",
+      "start_s": 21600,
+      "outdoor_c": -4,
+      "forecast_outdoor_c": -3,
+      "direct_kw_m2": 0,
+      "diffuse_kw_m2": 0,
+      "electricity_price": 0.27
+    },
+    {
+      "id": "weather_3",
+      "preset": "period",
+      "start_s": 32400,
+      "outdoor_c": 0,
+      "forecast_outdoor_c": 2,
+      "direct_kw_m2": 0.43,
+      "diffuse_kw_m2": 0.07,
+      "electricity_price": 0.27
+    },
+    {
+      "id": "weather_4",
+      "preset": "period",
+      "start_s": 43200,
+      "outdoor_c": 4,
+      "forecast_outdoor_c": 3,
+      "direct_kw_m2": 0.55,
+      "diffuse_kw_m2": 0.1,
+      "electricity_price": 0.27
+    },
+    {
+      "id": "weather_5",
+      "preset": "period",
+      "start_s": 54000,
+      "outdoor_c": 2,
+      "forecast_outdoor_c": 2,
+      "direct_kw_m2": 0.25,
+      "diffuse_kw_m2": 0.07,
+      "electricity_price": 0.27
+    },
+    {
+      "id": "weather_6",
+      "preset": "period",
+      "start_s": 64800,
+      "outdoor_c": -1,
+      "forecast_outdoor_c": 0,
+      "direct_kw_m2": 0,
+      "diffuse_kw_m2": 0,
+      "electricity_price": 0.27
+    }
+  ],
+  "events": [
+    {
+      "id": "shower",
+      "preset": "hot_water_draw",
+      "start_s": 25200,
+      "circuit": "hot_water"
+    },
+    {
+      "id": "air_study",
+      "preset": "window_open",
+      "start_s": 28800,
+      "room": "study"
+    },
+    {
+      "id": "hall_door",
+      "preset": "door_open",
+      "start_s": 32400,
+      "room": "kitchen",
+      "adjacent_room": "hall"
+    },
+    {
+      "id": "study_sensor",
+      "preset": "room_sensor_dropout",
+      "start_s": 122400,
+      "room": "study"
+    }
+  ]
+}

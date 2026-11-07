@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AHEAD Simulator</title>
+<style>
+:root{color-scheme:light dark;font:15px system-ui,sans-serif;--line:#77868c;--blue:#197bb0}
+body{margin:0 auto;max-width:1180px;padding:1rem}
+header,nav,.toolbar{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
+header h1{font-size:1.45rem;margin:.35rem auto .35rem 0}
+nav{border-bottom:1px solid var(--line);padding:.5rem 0}
+button,input,select{font:inherit;padding:.35rem .55rem}
+button[aria-pressed=true]{outline:2px solid var(--blue)}
+button{cursor:pointer}
+main{padding-top:1rem}
+details,fieldset,.panel{border:1px solid var(--line);border-radius:4px;padding:.65rem;margin:.65rem 0}
+summary{cursor:pointer;font-weight:650}
+fieldset{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.5rem;min-width:0}
+legend{font-weight:600}
+label{display:grid;gap:.15rem;min-width:0}
+input,select{min-width:0;box-sizing:border-box;width:100%}
+.toolbar{margin:.6rem 0}
+.schematic{overflow:auto;border:1px solid var(--line);border-radius:4px}
+svg text{fill:currentColor;font:12px system-ui,sans-serif}
+svg rect{fill:Canvas;stroke:var(--line)}
+svg g[tabindex]{cursor:pointer}
+svg g:focus rect,svg g.selected rect{stroke:var(--blue);stroke-width:2}
+svg line{stroke:var(--line);stroke-width:1.5}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:.28rem .45rem;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+th{width:48%;font-weight:500}
+small,.muted{opacity:.78}
+#message{min-height:1.25rem;white-space:pre-wrap}
+#message.error{color:#d24634}
+[hidden]{display:none!important}
+</style>
+<header><h1>AHEAD · House simulator</h1><small id="connection">Connecting</small></header>
+<nav>
+<button id="show-live" aria-pressed="true">Live</button>
+<button id="show-config" aria-pressed="false">Configure</button>
+</nav>
+<main id="live">
+<p id="run-info"></p>
+<div class="schematic" id="schematic"></div>
+<div class="panel">
+<h2 id="reading-title">Overview</h2>
+<div id="readings"></div>
+<label>Live trend <select id="trend"></select></label>
+<div id="chart"></div>
+</div>
+<details><summary>All live values</summary><pre id="full" style="white-space:pre-wrap"></pre></details>
+<p><a href="/api/live" target="_blank" rel="noopener">Open live JSON</a></p>
+</main>
+<main id="configure" hidden>
+<p>Choose a preset, edit its values, and connect it to the rest of the house. Save a draft or apply it to start a new run.</p>
+<div class="toolbar">
+<button id="save">Save draft</button>
+<button id="apply">Apply and restart simulation</button>
+<button id="example">Load example into editor</button>
+<button id="download">Export JSON</button>
+<button id="import">Import JSON</button>
+<input id="upload" type="file" accept=".json,application/json" hidden>
+</div>
+<div id="message" role="status"></div>
+<div id="forms"></div>
+</main>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const el = (tag, text) => {
+    const node = document.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    return node;
+};
+const human = key => key.replaceAll("_", " ").replace(/^./, letter => letter.toUpperCase());
+const names = {
+    levels:"Levels",rooms:"Rooms",surfaces:"Walls, floors, ceilings and roof faces",
+    layers:"Construction and insulation layers",windows:"Windows",circuits:"Water circuits and tanks",
+    heat_exchangers:"Heat exchangers",emitters:"Radiators and underfloor heating",sources:"Boilers, heat pumps and indoor units",
+    outdoor_units:"Split system outdoor units",solar:"Solar thermal and PV",weather:"Weather and tariffs",
+    events:"Occupancy events and faults"
+};
+const references = {
+    room:"rooms",adjacent_room:"rooms",level:"levels",surface:"surfaces",circuit:"circuits",
+    outdoor_unit:"outdoor_units",source:"sources",dhw_circuit:"circuits",from_circuit:"circuits",to_circuit:"circuits"
+};
+let catalogue, project, selected = "", trendPath = "", lastTime = -1, schemaKey = "";
+let history = new Map();
+const visibleGroups = ["outdoor_units","sources","circuits","heat_exchangers","emitters","rooms","surfaces","solar"];
+
+async function api(path, project) {
+    const options = project === undefined ? {} : {
+        method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(project)
+    };
+    const response = await fetch(path, options);
+    const body = await response.json();
+    if (!response.ok) throw Error(body.error || "Request failed");
+    return body;
+}
+
+function showPage(page) {
+    for (const name of ["live","configure"]) $(name).hidden = page !== name;
+    $("show-live").setAttribute("aria-pressed", page === "live");
+    $("show-config").setAttribute("aria-pressed", page === "configure");
+}
+$("show-live").onclick = () => showPage("live");
+$("show-config").onclick = () => showPage("configure");
+
+function input(label, value, changed, options, whole = false, refreshed = null) {
+    const wrapper = el("label", label);
+    let field;
+    if (options) {
+        field = el("select");
+        for (const option of new Set([value, ...options])) {
+            const item = el("option", option || "Select…");
+            item.value = option;
+            field.append(item);
+        }
+        field.value = value;
+    } else {
+        field = el("input");
+        field.type = typeof value === "number" ? "number" : typeof value === "boolean" ? "checkbox" : "text";
+        if (field.type === "number") field.step = whole ? "1" : "any";
+        if (field.type === "checkbox") field.checked = value;
+        else field.value = value;
+    }
+    field.oninput = () => changed(field.type === "checkbox" ? field.checked :
+        field.type === "number" ? (field.value === "" ? null : Number(field.value)) : field.value);
+    if (refreshed) field.onchange = refreshed;
+    wrapper.append(field);
+    return wrapper;
+}
+
+function redrawForms() {
+    const open = new Set([...$("forms").querySelectorAll("details[open]")].map(node => node.dataset.section));
+    $("forms").replaceChildren();
+    const settings = el("fieldset");
+    settings.append(el("legend","House location, orientation and experiment settings"));
+    project.settings ??= {};
+    for (const [key, value] of Object.entries(catalogue.settings)) {
+        settings.append(input(human(key), project.settings[key] ?? value,
+            next => project.settings[key] = next, null, Number.isInteger(value) && !["latitude","longitude","orientation_deg","ground_c"].includes(key)));
+    }
+    $("forms").append(settings);
+    for (const [section, presets] of Object.entries(catalogue.presets)) {
+        const rows = project[section] ??= [];
+        const details = el("details");
+        details.dataset.section = section;
+        details.open = open.has(section);
+        details.append(el("summary", `${names[section]} (${rows.length})`));
+        const add = el("button","Add");
+        const select = el("select");
+        select.setAttribute("aria-label", `Preset for ${names[section]}`);
+        for (const name of Object.keys(presets)) {
+            const option = el("option", human(name)); option.value = name; select.append(option);
+        }
+        add.onclick = () => {
+            let index = rows.length + 1;
+            while (rows.some(row => row.id === `${select.value}_${index}`)) index++;
+            rows.push({id:`${select.value}_${index}`,preset:select.value});
+            redrawForms();
+        };
+        const toolbar = el("div"); toolbar.className = "toolbar"; toolbar.append(select,add);
+        details.append(toolbar);
+        for (const [index,row] of rows.entries()) {
+            const card = el("fieldset");
+            card.append(el("legend", `${row.id} · ${human(row.preset)}`));
+            card.append(input("ID", row.id, value => row.id = value, null, false, redrawForms));
+            for (const [key, defaultValue] of Object.entries(presets[row.preset] || {})) {
+                let options = references[key] ? ["", ...(project[references[key]] || []).map(item => item.id)] : null;
+                if (key === "boundary") options = ["outdoors","room","ground","adiabatic"];
+                if (key === "mode_rule") options = ["largest_demand","heat_priority","cool_priority"];
+                if (key === "allocation") options = ["proportional","in_order"];
+                card.append(input(human(key), row[key] ?? defaultValue, value => row[key] = value,
+                    options, key === "start_s" || (section === "events" && key === "duration_s")));
+            }
+            const duplicate = el("button","Duplicate");
+            duplicate.onclick = () => {
+                let suffix = 2;
+                while (rows.some(candidate => candidate.id === `${row.id}_${suffix}`)) suffix++;
+                rows.push({...row,id:`${row.id}_${suffix}`});
+                redrawForms();
+            };
+            const remove = el("button","Remove");
+            remove.onclick = () => { rows.splice(index,1); redrawForms(); };
+            card.append(duplicate,remove); details.append(card);
+        }
+        $("forms").append(details);
+    }
+}
+
+function message(text, error = false) {
+    $("message").textContent = text;
+    $("message").classList.toggle("error",error);
+}
+for (const [button,path,success] of [
+    ["save","/api/project","Draft saved."],["apply","/api/apply","Project saved. Starting a new run."]
+]) $(button).onclick = async () => {
+    $("save").disabled = $("apply").disabled = true;
+    message(button === "apply" ? "Validating and preparing the run…" : "Validating…");
+    try { await api(path,project); message(success); }
+    catch (error) { message(error.message,true); }
+    finally { $("save").disabled = $("apply").disabled = false; }
+};
+$("example").onclick = () => { project = structuredClone(catalogue.example); redrawForms(); message("Example loaded into editor."); };
+$("download").onclick = () => {
+    const link = el("a");
+    link.href = URL.createObjectURL(new Blob([JSON.stringify(project,null,2)],{type:"application/json"}));
+    link.download = "ahead-house.json"; link.click(); setTimeout(() => URL.revokeObjectURL(link.href),1000);
+};
+$("import").onclick = () => $("upload").click();
+$("upload").onchange = async () => {
+    try {
+        const file = $("upload").files[0];
+        if (!file) return;
+        const loaded = JSON.parse(await file.text());
+        if (!loaded || typeof loaded !== "object" || Array.isArray(loaded) ||
+            Object.keys(catalogue.presets).some(key => loaded[key] !== undefined &&
+                (!Array.isArray(loaded[key]) || loaded[key].some(row => !row || typeof row.id !== "string" ||
+                    typeof row.preset !== "string" || !catalogue.presets[key][row.preset])))) {
+            throw Error("Choose a valid AHEAD project file.");
+        }
+        project = loaded; redrawForms(); message("Project loaded into editor.");
+    } catch (error) { message(error.message,true); }
+    finally { $("upload").value = ""; }
+};
+
+const svg = (tag, values={}) => {
+    const node = document.createElementNS("http://www.w3.org/2000/svg",tag);
+    for (const [key,value] of Object.entries(values)) node.setAttribute(key,value);
+    return node;
+};
+function format(value) {
+    return typeof value === "number" ? Number(value.toFixed(3)).toString() : value === null ? "—" : String(value);
+}
+function flatten(data,prefix="") {
+    return Object.entries(data || {}).flatMap(([key,value]) => {
+        const path = prefix ? `${prefix} / ${key}` : key;
+        return value && typeof value === "object" ? flatten(value,path) : [[path,value]];
+    });
+}
+function overview(state) {
+    return {...state.weather,...state.totals,...state.balance, active_faults:state.active_faults,
+        disturbances:state.disturbances};
+}
+function displayDetail(state) {
+    const [group,key] = selected.split("/");
+    const item = state[group]?.[key];
+    $("reading-title").textContent = item ? `${human(group)} · ${key}` : "Overview";
+    const configured = state.configured_objects?.[group]?.[key];
+    const data = item ? {...item, configuration:configured} : overview(state);
+    const entries = flatten(data).filter(([,value]) => value !== undefined);
+    const table = el("table");
+    for (const [field,value] of entries) {
+        const row = el("tr"); row.append(el("th",human(field)),el("td",format(value))); table.append(row);
+    }
+    $("readings").replaceChildren(table);
+    const choices = entries.filter(([,value]) => typeof value === "number").map(([field]) => field);
+    if (!choices.includes(trendPath)) trendPath = choices[0] || "";
+    if ($("trend").dataset.key !== JSON.stringify(choices)) {
+        $("trend").replaceChildren(...choices.map(choice => {
+            const item = el("option",human(choice)); item.value = choice; return item;
+        }));
+        $("trend").dataset.key = JSON.stringify(choices);
+    }
+    $("trend").value = trendPath;
+    const points = history.get(`${selected}/${trendPath}`) || [];
+    if (points.length < 2) {
+        $("chart").replaceChildren(el("small","Waiting for trend samples."));
+        return;
+    }
+    const values = points.map(point => point[1]);
+    const low = Math.min(...values), high = Math.max(...values);
+    const delta = high - low || 1;
+    const chart = svg("svg",{viewBox:"0 0 500 100",width:"100%",height:"100",role:"img","aria-label":"Recent trend"});
+    chart.append(svg("polyline",{fill:"none",stroke:"var(--blue)","stroke-width":"2",
+        points:points.map(([time,val]) => `${8+(time-points[0][0])*484/(points.at(-1)[0]-points[0][0])},${89-78*(val-low)/delta}`).join(" ")}));
+    $("chart").replaceChildren(chart,el("small",`Recent range ${format(low)} – ${format(high)}`));
+}
+$("trend").onchange = () => { trendPath = $("trend").value; };
+function draw(state) {
+    const groups = visibleGroups.filter(group => Object.keys(state[group] || {}).length);
+    const positions = new Map();
+    const width = Math.max(280, groups.length*172+12);
+    const height = Math.max(85,...groups.map(group => Object.keys(state[group]).length*61+37));
+    const graph = svg("svg",{width,height,viewBox:`0 0 ${width} ${height}`,role:"group","aria-label":"House schematic"});
+    for (const [column,group] of groups.entries()) {
+        const x = 10+172*column;
+        const title = svg("text",{x,y:17}); title.textContent = human(group); graph.append(title);
+        for (const [index,name] of Object.keys(state[group]).entries()) {
+            positions.set(`${group}/${name}`,[x,31+61*index]);
+        }
+    }
+    for (const [id,[x,y]] of positions) {
+        const [group,name] = id.split("/");
+        const item = state[group][name];
+        const links = [["outdoor_units",item.outdoor_unit],["circuits",item.loop || item.circuit],
+                       ["rooms",item.zone || item.room],["rooms",item.adjacent_room],
+                       ["surfaces",item.surface],["circuits",item.source_circuit]];
+        for (const [target,key] of links) {
+            const other = positions.get(`${target}/${key}`);
+            if (!other) continue;
+            const [ox,oy] = other;
+            graph.append(svg("line",{x1:x<ox?x+145:x,y1:y+20,x2:x<ox?ox:ox+145,y2:oy+20}));
+        }
+    }
+    for (const [id,[x,y]] of positions) {
+        const [group,name] = id.split("/");
+        const item = state[group][name];
+        const node = svg("g",{tabindex:"0",role:"button","aria-label":id,"data-id":id});
+        const title = svg("text",{x:x+7,y:y+15}); title.textContent = name.length>21 ? name.slice(0,19)+"…" : name;
+        node.append(svg("rect",{x,y,width:145,height:42,rx:4}),title,svg("text",{x:x+7,y:y+32,"data-reading":""}));
+        const choose = () => { selected = selected === id ? "" : id; trendPath = ""; render(state); };
+        node.onclick = choose;
+        node.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); choose(); } };
+        graph.append(node);
+    }
+    $("schematic").replaceChildren(graph);
+}
+function render(state) {
+    $("connection").textContent = state.status;
+    $("run-info").textContent = state.elapsed_s === undefined ? state.status :
+        `Elapsed ${new Date(state.elapsed_s*1000).toISOString().slice(11,19)} · ${Math.floor(state.elapsed_s/86400)} day(s) · Outdoors ${format(state.weather.actual_outdoor_c)} °C`;
+    $("full").textContent = JSON.stringify(state,null,2);
+    const key = JSON.stringify(visibleGroups.map(group => Object.entries(state[group] || {}).map(([id,item]) =>
+        [id,item.outdoor_unit,item.loop,item.circuit,item.room,item.zone,item.surface,item.adjacent_room,item.source_circuit])));
+    if (schemaKey !== key) { schemaKey = key; draw(state); }
+    for (const node of $("schematic").querySelectorAll("g[data-id]")) {
+        const [group,name] = node.dataset.id.split("/");
+        const item = state[group][name];
+        const main = {
+            heat_exchangers:[item.heat_kw,"kW"],rooms:[item.air_c,"°C"],circuits:[item.supply_c,"°C"],emitters:[item.room_heat_kw,"kW"],
+            sources:[item.heat_kw,"kW"],outdoor_units:[item.electrical_kw,"kW"],
+            surfaces:[item.irradiance_kw_m2,"kW/m²"],solar:[item.electrical_kw ?? item.incident_kw,"kW"]
+        }[group];
+        node.querySelector("[data-reading]").textContent = `${format(main[0])} ${main[1]}`;
+        node.classList.toggle("selected",node.dataset.id === selected);
+        node.onclick = () => {
+            selected = selected === node.dataset.id ? "" : node.dataset.id;
+            trendPath = ""; render(state);
+        };
+        node.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); node.onclick(); } };
+    }
+    displayDetail(state);
+}
+async function refresh() {
+    try {
+        const state = await api("/api/live");
+        if (state.elapsed_s !== undefined && state.elapsed_s !== lastTime) {
+            if (state.elapsed_s < lastTime) history = new Map();
+            lastTime = state.elapsed_s;
+            const series = [["",overview(state)], ...visibleGroups.flatMap(group =>
+                Object.entries(state[group] || {}).map(([name,value]) => [`${group}/${name}`,value]))];
+            for (const [id,data] of series) for (const [field,value] of flatten(data)) {
+                if (typeof value !== "number") continue;
+                const path = `${id}/${field}`;
+                if (!history.has(path)) history.set(path,[]);
+                const points = history.get(path);
+                points.push([state.elapsed_s,value]);
+                if (points.length > 150) points.shift();
+            }
+        }
+        render(state);
+    } catch (error) { $("connection").textContent = "Disconnected"; }
+    finally { setTimeout(refresh, 1500); }
+}
+Promise.all([api("/api/catalog"),api("/api/project")]).then(([catalog,data]) => {
+    catalogue = catalog; project = data.draft; redrawForms();
+}).catch(error => message(error.message,true));
+refresh();
+</script>
+</html>

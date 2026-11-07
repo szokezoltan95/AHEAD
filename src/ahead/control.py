@@ -1,6 +1,6 @@
 """Shared controller interface for simulation and Home Assistant."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import isfinite
 from typing import Mapping, Protocol
 
@@ -12,6 +12,7 @@ class SourceCapabilities:
     zones: frozenset[str]
     modulating: bool = False
     uses_water_loop: bool = False
+    reversible: bool = False
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class Equipment:
 
     sources: Mapping[str, SourceCapabilities]
     valves: frozenset[str]
+    valve_zones: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -30,14 +32,18 @@ class Observation:
     available_sources: frozenset[str]
     electricity_price_kwh: float | None = None
     gas_price_kwh: float | None = None
+    forecast_outdoor_c: float | None = None
 
 
 @dataclass(frozen=True)
 class ControlPlan:
-    """Source and valve requests on a scale of zero to one."""
+    """Fractional requests. Reversible sources accept negative values for cooling."""
 
     sources: Mapping[str, float]
     valves: Mapping[str, float]
+    room_setpoints_c: Mapping[str, float] = field(default_factory=dict)
+    fan_fractions: Mapping[str, float] = field(default_factory=dict)
+    water_setpoints_c: Mapping[str, float] = field(default_factory=dict)
 
 
 class Controller(Protocol):
@@ -81,7 +87,8 @@ class HysteresisController:
         return ControlPlan(
             sources=sources,
             valves={
-                zone: float(zone in self._calling and zone not in directly_heated)
-                for zone in self._equipment.valves
+                valve: float(zone in self._calling and zone not in directly_heated)
+                for valve in self._equipment.valves
+                for zone in (self._equipment.valve_zones.get(valve, valve),)
             },
         )

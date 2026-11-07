@@ -4,7 +4,7 @@
 
 AHEAD is an early-stage research project on self-adaptive control of building heating. It will investigate whether a controller can learn how an unfamiliar building heats up and cools down from routine measurements, then use that model to coordinate its heating equipment while maintaining comfort and respecting equipment limits.
 
-> **Project status:** The Compose test bench runs a real-time whole-house simulator that Home Assistant can control via MQTT. The adaptive AHEAD controller and its HAOS integration are planned.
+> **Project status:** The Compose test bench runs a real-time whole-house simulator that Home Assistant can control via MQTT. It includes a browser-based house editor and live schematic. The adaptive AHEAD controller and its HAOS integration are planned.
 
 ## Research scope
 
@@ -46,6 +46,26 @@ Use `docker compose logs -f simulator` to see connections and received requests.
 
 Set `AHEAD_SCENARIO` in a Compose `.env` file to mount a different TOML scenario. The web UI binds to loopback. For a remote Docker host, forward its Home Assistant port to your computer with SSH.
 
+## Configure and monitor the house
+
+Open the [AHEAD simulator console](http://localhost:8765). Compose publishes the console on loopback. Set `AHEAD_CONSOLE_PORT` in `.env` to use a different host port.
+
+- **Live** shows a schematic, each component's live readings and recent trends, and the underlying JSON at `/api/live`. Room air and fabric temperatures, valve positions and flow, water and slab temperatures, requested and actual heat output, sensor faults, and the heat and electrical balances are visible independently of MQTT.
+- **Configure** opens with an editable six-room example. Add objects from the preset lists, use the dropdowns to connect them, and **Save draft** or **Apply and restart simulation**. Applying validates links, optionally warms up the house, stores the starting thermal checkpoint, and begins a new live run. You can import and export project JSON. After applying, use the refreshed virtual devices in Home Assistant. A reversible split indoor unit uses positive percentages for heat and negative percentages for cooling. Its optional setpoint and fan controls apply when set.
+- **Replay** uses the same saved project, starting checkpoint, and seeded sensor noise. Applying a project or restarting the simulator starts its scenario clock from zero. Home Assistant commands are live inputs, so repeating an experiment also requires repeating the controller inputs.
+
+| Area | Configurable model |
+| --- | --- |
+| Construction | Levels, heated or unheated rooms, layered walls/floors/ceilings/roofs, windows and doors, orientation, shared boundaries and ground |
+| Hydronics | Multiple circuits, radiator sizes, moving valves, underfloor slabs, buffer tanks, heat exchangers and hot-water cylinders with draw events and optional source priority |
+| Equipment | On/off and modulating boilers, air-to-water heat pumps, and single- or multi-split air-to-air systems with shared capacity and configurable mode arbitration |
+| Solar and electrical | Surface irradiance from the scenario location, time and orientation, glazing gains, solar thermal, PV, and electrical import and export |
+| Scenarios | Actual and forecast weather, occupancy and tariffs, ventilation and open-door events, hot-water draws, sensor faults and equipment outages |
+
+On first start, the live bench uses the existing TOML house. Apply the example from **Configure** to run the expanded model. The applied project takes precedence over the TOML house on later starts and is stored in the `simulator-config` volume.
+
+The solar position calculation uses the [NOAA fractional-year approximation](https://gml.noaa.gov/grad/solcalc/solareqns.PDF). These are generic simulation presets. The room fabric and water tanks use lumped thermal states, with conductances derived from configured assemblies. The model uses simplified flow allocation, shading and equipment curves. It has yet to be calibrated against a measured building.
+
 The Compose test bench hosts virtual equipment for development and experiments. The planned AHEAD integration will run the controller locally on HAOS when deployed to a real home.
 
 ## Run an offline benchmark
@@ -53,7 +73,7 @@ The Compose test bench hosts virtual equipment for development and experiments. 
 With Python 3.12 or later, run from the repository root.
 
 ```bash
-python -m pip install -e .
+python -m pip install -e ".[live]"
 python -m ahead.simulator scenarios/hybrid_house.toml --csv hybrid-house.csv
 python -m unittest discover -s tests -v
 ```
@@ -69,7 +89,7 @@ The offline example runs three winter days in a synthetic, two-storey, four-zone
 
 The simulator advances the physical model between controller decisions. The controller receives sensor readings, equipment availability, and tariffs through the shared interface. The simulator records the underlying state separately so controller performance can be scored against it. Energy use includes the configured electrical appliance load. Comfort deviation is the sum of absolute room setpoint errors over time.
 
-The current model uses configurable thermal parameters for each room and a lumped water loop. Geometry-driven construction, pressure-based hydraulics, domestic hot water, and cooling are outside the current implementation. The included house and weather profiles are synthetic and have yet to be calibrated against a measured building.
+The TOML benchmark uses the original four-zone house and one water loop. The browser project editor supports the broader model described above. The included house and weather profiles are synthetic.
 
 ## Evaluation
 

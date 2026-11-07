@@ -7,7 +7,7 @@ from math import isfinite
 from pathlib import Path
 from random import Random
 import tomllib
-from typing import Iterator
+from typing import Callable, Iterator
 
 from ahead.control import Controller, ControlPlan, Observation
 from ahead.simulator.house import Conditions, House, Partition, Source, WaterLoop, Zone
@@ -50,10 +50,11 @@ class Scenario:
     faults: tuple[Fault, ...]
     sensor_noise_c: float
     seed: int
+    environment: Callable[[int, Conditions], Conditions] | None = None
 
     @property
     def setpoints_c(self) -> dict[str, float]:
-        return {name: zone.setpoint_c for name, zone in self.house.zones.items()}
+        return {name: zone.setpoint_c for name, zone in self.house.zones.items() if zone.conditioned}
 
     def run(self, controller: Controller, *, continuous: bool = False) -> Iterator[Sample]:
         if self.house.elapsed_s:
@@ -64,6 +65,8 @@ class Scenario:
         for start_s in starts:
             profile_s = start_s if self.period_s is None else start_s % self.period_s
             conditions = weather[bisect_right(times, profile_s) - 1]
+            if self.environment:
+                conditions = self.environment(start_s, conditions)
             faults = {fault.target: fault for fault in self.faults if fault.active(start_s)}
 
             def read_sensor(target, actual):
@@ -86,6 +89,7 @@ class Scenario:
                 available_sources=available,
                 electricity_price_kwh=conditions.electricity_price_kwh,
                 gas_price_kwh=conditions.gas_price_kwh,
+                forecast_outdoor_c=conditions.forecast_outdoor_c,
             )
             plan = controller.decide(observation)
             end_s = start_s + self.step_s
