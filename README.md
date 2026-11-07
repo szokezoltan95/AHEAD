@@ -4,8 +4,6 @@
 
 AHEAD is an early-stage research project on self-adaptive control of building heating. It will investigate whether a controller can learn how an unfamiliar building heats up and cools down from routine measurements, then use that model to coordinate its heating equipment while maintaining comfort and respecting equipment limits.
 
-The project is being developed in the research context of the Faculty of Aeronautics at the Technical University of Košice (TUKE). The proposed research programme spans 24 months.
-
 > **Project status:** Research and design. The controller, simulator, and Home Assistant integration are planned deliverables.
 
 ## Research scope
@@ -23,7 +21,7 @@ The project is being developed in the research context of the Faculty of Aeronau
 | Adaptive control engine | Estimates thermal dynamics, predicts the effect of control actions, and chooses equipment commands subject to comfort and equipment constraints. It is designed to run independently of Home Assistant and the simulator. |
 | Home Assistant integration | Provides the initial platform for equipment adapters, configuration, monitoring, and device commands. |
 | Physics-based simulator | Models building heat transfer and thermal inertia, heating equipment, hydraulic flow, actuator response, and weather. Virtual devices expose the measurements and controls available in real installations while the simulator keeps its internal parameters hidden from the controller. |
-| Experiment infrastructure | Runs repeatable, containerised experiments on a proposed university-hosted server. Scenarios vary building properties, weather, energy tariffs, equipment configurations, and sensor faults. |
+| Experiment infrastructure | Runs repeatable, containerised experiments on a proposed dedicated server. Scenarios vary building properties, weather, energy tariffs, equipment configurations, and sensor faults. |
 | Physical systems | Provide a later stage of validation on real equipment where feasible. |
 
 ## Evaluation
