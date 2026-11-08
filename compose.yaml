@@ -1,12 +1,14 @@
 services:
   mqtt:
     image: eclipse-mosquitto:2
+    networks: [lab]
     restart: unless-stopped
     volumes:
       - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
 
   simulator:
     build: .
+    networks: [lab]
     restart: unless-stopped
     depends_on:
       - mqtt
@@ -20,21 +22,39 @@ services:
       - "8765"
       - --project-store
       - /data/project.json
-    ports:
-      - "127.0.0.1:${AHEAD_CONSOLE_PORT:-8765}:8765"
     volumes:
       - "${AHEAD_SCENARIO:-./scenarios/hybrid_house.toml}:/scenario.toml:ro"
       - simulator-config:/data
 
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:stable
+    networks: [lab]
     restart: unless-stopped
     depends_on:
       - mqtt
-    ports:
-      - "127.0.0.1:${AHEAD_HA_PORT:-8123}:8123"
     volumes:
       - homeassistant-config:/config
+
+  web:
+    image: haproxy:3.2-alpine
+    restart: unless-stopped
+    cap_drop: [ALL]
+    depends_on:
+      - homeassistant
+      - simulator
+    networks: [web, lab]
+    ports:
+      - "127.0.0.1:${AHEAD_HA_PORT:-8123}:8123"
+      - "127.0.0.1:${AHEAD_CONSOLE_PORT:-8765}:8765"
+    volumes:
+      - ./docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+
+networks:
+  lab:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+  web: {}
 
 volumes:
   homeassistant-config:

@@ -34,7 +34,7 @@ Install Docker with Compose and run this from the repository root.
 docker compose up -d --build
 ```
 
-Compose starts the simulator, an MQTT broker, and Home Assistant Container. The simulator advances one simulated second per wall-clock second and publishes fresh readings every two seconds. It runs until stopped. The example repeats its daily weather and tariff profile, and its scheduled faults occur once at the specified elapsed times.
+Compose starts the simulator, an MQTT broker, Home Assistant Container, and a localhost web proxy. The three lab services share an isolated Docker network without a route to the home LAN or the internet. Only the proxy publishes ports on the Docker host. It forwards the two web interfaces without changing HTTP headers or WebSocket traffic. The simulator advances one simulated second per wall-clock second and publishes fresh readings every two seconds. It runs until stopped. The example repeats its daily weather and tariff profile, and its scheduled faults occur once at the specified elapsed times.
 
 1. Open [Home Assistant](http://localhost:8123) and complete onboarding.
 2. In **Settings → Devices & services → Add integration**, select **MQTT**. Enter broker host `mqtt` and port `1883`. Leave the username and password blank. The broker is on the Compose network and its port is unpublished.
@@ -44,7 +44,7 @@ The device exposes room and outdoor temperature sensors, supply and return tempe
 
 Use `docker compose logs -f simulator` to see connections and received requests. Use `docker compose down` to stop the bench. Home Assistant keeps its configuration in a Docker volume. The simulated house starts from the scenario's initial state when the simulator restarts.
 
-Set `AHEAD_SCENARIO` in a Compose `.env` file to mount a different TOML scenario. The web UI binds to loopback. For a remote Docker host, forward its Home Assistant port to your computer with SSH.
+Set `AHEAD_SCENARIO` in a Compose `.env` file to mount a different TOML scenario. The web ports bind to loopback. For a remote Docker host, forward the desired port to your computer with SSH. Home Assistant still discovers the virtual devices through the internal MQTT broker.
 
 ## Configure and monitor the house
 
