@@ -9,6 +9,7 @@ from math import isfinite
 from typing import Mapping
 
 from ahead.control import ControlPlan, Equipment, SourceCapabilities
+from ahead.simulator.moisture import AIR_KWH_KG_K, LATENT_KWH_KG, humidity_ratio, relative_humidity
 
 
 from ahead.simulator.hydronics import Emitter, HeatExchanger, Hydronics, WaterLoop, WATER_KW_PER_K_PER_L_MIN
@@ -31,6 +32,7 @@ class Zone:
     ground_kw_k: float = 0
     conditioned: bool = True
     expose_sensor: bool = True
+    initial_humidity_pct: float = 50
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,9 @@ class Source:
     water_setpoint_control: bool = False
     dhw_loop: str | None = None
     report_heat: bool = True
+    indoor_fan_kw: float = 0.045
+    report_indoor_humidity: bool = False
+    humidity_setpoint_control: bool = False
 
 
 @dataclass(frozen=True)
@@ -89,6 +94,7 @@ class Conditions:
     gas_price_kwh: float = 0
     forecast_outdoor_c: float | None = None
     ground_c: float = 10
+    outdoor_humidity_pct: float = 75
     solar_by_zone_kw: Mapping[str, float] = field(default_factory=dict)
     ventilation_kw_k: Mapping[str, float] = field(default_factory=dict)
     door_exchange_kw_k: Mapping[tuple[str, str], float] = field(default_factory=dict)
@@ -146,6 +152,9 @@ class House:
         self._partitions = partitions
         self._air = {zone.name: zone.initial_c for zone in zones}
         self._fabric = self._air.copy()
+        self._moisture = {
+            zone.name: humidity_ratio(zone.initial_c, zone.initial_humidity_pct) for zone in zones
+        }
         loops = dict(loops or ({"main": loop} if loop else {}))
         emitters = dict(emitters) if emitters is not None else {
             zone.name: Emitter(zone.name, "main", zone.radiator_kw_k, zone.radiator_flow_l_min)
@@ -173,6 +182,8 @@ class House:
                     zone.base_gains_kw, zone.ground_kw_k))
             if zone.radiator_kw_k and not zone.radiator_flow_l_min:
                 raise ValueError("Radiators need a positive design flow")
+            if not 0 <= zone.initial_humidity_pct <= 100:
+                raise ValueError("Room humidity must be between zero and 100")
             if not all(map(isfinite, (zone.initial_c, zone.setpoint_c))):
                 raise ValueError("Zone temperatures must be finite")
             air_conductance[zone.name] = (
@@ -196,6 +207,8 @@ class House:
                 raise ValueError(f"Emitter {name} must connect to a room and water circuit")
             _check((emitter.kw_k, emitter.flow_l_min), positive=True)
             _check((emitter.slab_capacity, emitter.slab_to_room_kw_k, emitter.travel_s))
+            if not isfinite(emitter.local_sensor_bias_c) or not 0 <= emitter.local_sensor_warming_c <= 20:
+                raise ValueError("Emitter sensor calibration is invalid")
             air_conductance[emitter.zone] += emitter.slab_to_room_kw_k or emitter.kw_k
         self.hydronics = Hydronics(loops, emitters, self._air, pipe_network)
         self._first_loop = next(iter(loops), None)
@@ -218,7 +231,7 @@ class House:
                 raise ValueError("Defrost duration cannot exceed its period")
         for source in sources:
             _check((source.max_heat_kw, source.efficiency), positive=True)
-            _check((source.min_on_s, source.min_off_s, source.min_fraction))
+            _check((source.min_on_s, source.min_off_s, source.min_fraction, source.indoor_fan_kw))
             if source.min_fraction > 1:
                 raise ValueError("Minimum output fraction cannot exceed one")
             if source.dhw_loop and (source.dhw_loop not in loops or not loops[source.dhw_loop].dhw):
@@ -283,11 +296,17 @@ class House:
         return {
             "air_c": self._air.copy(), "fabric_c": self._fabric.copy(),
             "water_c": self.hydronics.water.copy(), "slab_c": self.hydronics.slab.copy(),
+            "moisture": self._moisture.copy(),
         }
 
     def restore_checkpoint(self, snapshot: dict) -> None:
         for key, target in (("air_c", self._air), ("fabric_c", self._fabric),
-                            ("water_c", self.hydronics.water), ("slab_c", self.hydronics.slab)):
+                            ("water_c", self.hydronics.water), ("slab_c", self.hydronics.slab),
+                            ("moisture", self._moisture)):
+            if key == "moisture" and key not in snapshot:
+                target.update({name: humidity_ratio(self._air[name], zone.initial_humidity_pct)
+                               for name, zone in self.zones.items()})
+                continue
             values = snapshot[key]
             if target.keys() != values.keys() or not all(map(isfinite, values.values())):
                 raise ValueError("Checkpoint does not match this house")
@@ -297,6 +316,10 @@ class House:
     @property
     def indoor_c(self) -> dict[str, float]:
         return self._air.copy()
+
+    @property
+    def indoor_humidity(self) -> dict[str, float]:
+        return {name: relative_humidity(self._air[name], ratio) for name, ratio in self._moisture.items()}
 
     @property
     def water_c(self) -> float | None:
@@ -314,6 +337,7 @@ class House:
         return {
             "rooms": {
                 name: {"air_c": self._air[name], "fabric_c": self._fabric[name],
+                       "humidity_pct": relative_humidity(self._air[name], self._moisture[name]),
                        **self._room_flux.get(name, {})}
                 for name in self.zones
             },
@@ -336,6 +360,10 @@ class House:
         return {name: state.starts for name, state in self._source_state.items()}
 
     @property
+    def source_details(self) -> Mapping[str, dict]:
+        return self._source_details
+
+    @property
     def source_heat_kw(self) -> dict[str, float]:
         return self._source_heat_kw.copy()
 
@@ -354,6 +382,11 @@ class House:
         if not all(map(isfinite, (conditions.outdoor_c, conditions.electricity_price_kwh,
                                   conditions.gas_price_kwh))):
             raise ValueError("Weather and tariffs must be finite")
+        if not 0 <= conditions.outdoor_humidity_pct <= 100:
+            raise ValueError("Outdoor humidity must be between zero and 100")
+        for name, fraction in plan.indoor_fans.items():
+            if name not in self.sources or self.sources[name].direct_zone is None or not 0 <= fraction <= 1:
+                raise ValueError("Invalid indoor fan command")
         if plan.sources.keys() - self.sources.keys() or plan.valves.keys() - self.equipment.valves:
             raise ValueError("Control plan references an unknown actuator")
         for fraction in plan.valves.values():
@@ -363,7 +396,7 @@ class House:
             source = self.sources[name]
             if not (-1 if source.reversible else 0) <= fraction <= 1:
                 raise ValueError(f"Invalid request for {name}")
-            if not source.modulating and fraction not in (0, 1):
+            if not source.modulating and fraction not in (-1, 0, 1):
                 raise ValueError(f"Source {name} only accepts on/off commands")
 
         for values, capability, lower, upper in (
@@ -407,6 +440,9 @@ class House:
     def _step(self, dt_h, conditions, plan, available_sources):
         air_flow = dict.fromkeys(self.zones, 0.0)
         fabric_flow = dict.fromkeys(self.zones, 0.0)
+        moisture_flow = dict.fromkeys(self.zones, 0.0)
+        dry_air_kg = {name: zone.air_capacity / AIR_KWH_KG_K for name, zone in self.zones.items()}
+        outdoor_moisture = humidity_ratio(conditions.outdoor_c, conditions.outdoor_humidity_pct)
         water_flow, emitter_heat, slab_heat = self.hydronics.exchange(
             self._air, plan.valves, dt_h * 3600, fabric=self._fabric,
             outdoor=conditions.outdoor_c, ground=conditions.ground_c
@@ -420,9 +456,10 @@ class House:
             air = self._air[name]
             fabric = self._fabric[name]
             coupling = (fabric - air) * zone.air_fabric_kw_k
-            ventilation = (outdoor - air) * (
-                zone.infiltration_kw_k + conditions.ventilation_kw_k.get(name, 0)
-            )
+            air_exchange = zone.infiltration_kw_k + conditions.ventilation_kw_k.get(name, 0)
+            ventilation = (outdoor - air) * air_exchange
+            moisture_flow[name] = (outdoor_moisture - self._moisture[name]) * air_exchange / AIR_KWH_KG_K
+            moisture_flow[name] += conditions.occupied_gains_kw * 0.6 / len(self.zones)
             shell = (outdoor - fabric) * zone.fabric_outside_kw_k
             ground = (conditions.ground_c - fabric) * zone.ground_kw_k
             gains = zone.base_gains_kw + appliance_gains
@@ -455,6 +492,9 @@ class House:
                      (self._air[link.first] - self._air[link.second]) * link.kw_k)
         for (first, second), conductance in conditions.door_exchange_kw_k.items():
             transfer(first, second, "airflow", (self._air[first] - self._air[second]) * conductance)
+            vapour = (self._moisture[first] - self._moisture[second]) * conductance / AIR_KWH_KG_K
+            moisture_flow[first] -= vapour
+            moisture_flow[second] += vapour
         for (first, second), area in conditions.radiant_opening_m2.items():
             first_k = max(0, self._fabric[first] + 273.15)
             second_k = max(0, self._fabric[second] + 273.15)
@@ -530,13 +570,28 @@ class House:
             else:
                 requested_kw = 0.0
 
-            delivered, status = self._source_output(source, requested_kw, limit_kw, name in available_sources)
+            delivered, status = self._source_output(source, requested_kw, limit_kw,
+                name in available_sources, name in plan.stopped_sources)
             self._source_heat_kw[name] = delivered
+            latent_kw = 0.0
+            fan_kw = 0.0
+            sensible = delivered
             if source.direct_zone is None:
                 water_flow[loop_name] += delivered
             else:
-                air_flow[source.direct_zone] += delivered
-                self._room_flux[source.direct_zone]["direct_heat_kw"] += delivered
+                zone = source.direct_zone
+                fan = plan.indoor_fans.get(name, 0)
+                if fan and name in available_sources and (delivered or name in plan.fan_only_sources):
+                    fan_kw = source.indoor_fan_kw * fan**3
+                    if delivered < 0:
+                        coil_moisture = humidity_ratio(max(5, self._air[zone] - 12), 100)
+                        available_water = max(0, self._moisture[zone] - coil_moisture) * dry_air_kg[zone]
+                        fraction = 0.5 if name in plan.dry_sources else 0.25
+                        latent_kw = min(-delivered * fraction, available_water * LATENT_KWH_KG / dt_h)
+                        moisture_flow[zone] -= latent_kw / LATENT_KWH_KG
+                sensible = delivered + latent_kw + fan_kw
+                air_flow[zone] += sensible
+                self._room_flux[zone]["direct_heat_kw"] += sensible
             efficiency = source.efficiency + source.efficiency_per_outdoor_k * (
                 outdoor - source.reference_outdoor_c
             )
@@ -550,7 +605,7 @@ class House:
             if source.fuel == "gas":
                 gas_kw += power
             else:
-                electricity_kw += power
+                electricity_kw += power + fan_kw
             if source.outdoor_unit:
                 self._outdoor_details[source.outdoor_unit]["electrical_kw"] += power
             heat_kw += delivered
@@ -561,7 +616,8 @@ class House:
                 "room_target_c": plan.room_setpoints_c.get(name),
                 "fan_fraction": plan.fan_fractions.get(name),
                 "dhw_priority_active": bool(source.dhw_loop and loop_name == source.dhw_loop),
-                "input_kw": power, "fuel": source.fuel, "efficiency": efficiency, "status": status,
+                "input_kw": power + fan_kw, "fuel": source.fuel, "efficiency": efficiency, "status": status,
+                "fan_kw": fan_kw, "latent_cooling_kw": latent_kw, "sensible_heat_kw": sensible,
                 "starts": self._source_state[name].starts,
             }
 
@@ -569,6 +625,8 @@ class House:
             before = self._air[name] - zone.setpoint_c
             self._air[name] += air_flow[name] * dt_h / zone.air_capacity
             self._fabric[name] += fabric_flow[name] * dt_h / zone.fabric_capacity
+            humidity = self._moisture[name] + moisture_flow[name] * dt_h / dry_air_kg[name]
+            self._moisture[name] = min(humidity_ratio(self._air[name],100), max(0,humidity))
             after = self._air[name] - zone.setpoint_c
             area = (abs(before) + abs(after)) * dt_h / 2
             if before * after < 0:
@@ -646,15 +704,19 @@ class House:
             }
         return allocated, overhead
 
-    def _source_output(self, source, requested_kw, limit_kw, available):
+    def _source_output(self, source, requested_kw, limit_kw, available, stopped=False):
         state = self._source_state[source.name]
         since_change = self.elapsed_s - state.changed_at_s
         output = requested_kw
         status = "running" if output else "idle"
         if not available:
             output, status = 0.0, "unavailable"
+        elif stopped:
+            output, status = 0.0, "idle"
         elif limit_kw <= 0:
             output, status = 0.0, "capacity limit"
+        elif state.on and state.output_kw * requested_kw < 0 and source.min_off_s:
+            output, status = 0.0, "mode change lockout"
         elif state.on and not requested_kw and since_change < source.min_on_s:
             output = min(abs(state.output_kw), limit_kw) * (1 if state.output_kw >= 0 else -1)
             status = "minimum run time"

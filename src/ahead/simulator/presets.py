@@ -74,7 +74,8 @@ PRESETS = {
                          "min_on_s": 240.0, "min_off_s": 180.0, "water_setpoint_control": True,
                          "dhw_circuit": ""},
         "indoor_split": {"room": "", "outdoor_unit": "", "capacity_kw": 2.5, "reversible": True,
-                         "room_setpoint_control": True, "fan_control": True},
+                         "room_setpoint_control": True, "fan_control": True, "indoor_fan_kw": 0.045,
+                         "report_indoor_humidity": False, "humidity_setpoint_control": False},
     },
     "outdoor_units": {
         "split": {"capacity_kw": 3.5, "cop": 3.4, "cop_per_outdoor_k": 0.08,
@@ -92,7 +93,7 @@ PRESETS = {
                               "optical_efficiency": 0.68, "loss_w_m2k": 4.0},
     },
     "weather": {"period": {"start_s": 0, "outdoor_c": 0.0, "forecast_outdoor_c": 0.0,
-                           "direct_kw_m2": 0.45, "diffuse_kw_m2": 0.10, "occupancy_kw": 0.25,
+                           "outdoor_humidity_pct": 75.0, "direct_kw_m2": 0.45, "diffuse_kw_m2": 0.10, "occupancy_kw": 0.25,
                            "appliance_kw": 0.25, "electricity_price": 0.24, "gas_price": 0.09}},
     "events": {
         "window_open": {"start_s": 3600, "duration_s": 600, "room": "", "extra_ach": 2.0},
@@ -108,7 +109,12 @@ PRESETS = {
 
 for preset in PRESETS["rooms"].values():
     preset["expose_sensor"] = True
-for preset in PRESETS["sources"].values():
-    preset["report_heat"] = True
+    preset["initial_humidity_pct"] = 50.0
+for name, preset in PRESETS["emitters"].items():
+    preset["local_sensor_warming_c"] = 1.5 if name != "underfloor" else 0.0
+    preset["local_sensor_bias_c"] = 0.0
+    preset["report_valve_opening"] = False
+for name, preset in PRESETS["sources"].items():
+    preset["report_heat"] = name in {"gas_modulating", "air_to_water"}
 for preset in PRESETS["circuits"].values():
     preset["expose_sensors"] = True

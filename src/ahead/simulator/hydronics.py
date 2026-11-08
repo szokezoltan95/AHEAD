@@ -29,6 +29,9 @@ class Emitter:
     slab_capacity: float = 0
     slab_to_room_kw_k: float = 0
     travel_s: float = 0
+    local_sensor_warming_c: float = 1.5
+    local_sensor_bias_c: float = 0.0
+    report_valve_opening: bool = False
 
 
 @dataclass(frozen=True)

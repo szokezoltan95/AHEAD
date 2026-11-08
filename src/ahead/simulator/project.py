@@ -187,7 +187,7 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
             air_to_fabric, envelope[name] * scale, volume[name] * row["ach"] * 1.2 * 1.005 / 3600,
             row["initial_c"], row["target_c"], base_gains_kw=row["gains_kw"],
             ground_kw_k=ground[name] * scale, conditioned=row["preset"] != "unheated",
-            expose_sensor=row["expose_sensor"],
+            expose_sensor=row["expose_sensor"], initial_humidity_pct=row["initial_humidity_pct"],
         ))
         for surface in surface_info.values():
             if surface["room"] == name:
@@ -216,7 +216,8 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
             slab_capacity = area * row["slab_depth_m"] * 2300 * 880 / 3_600_000
             room_conductance = area / (0.12 + row["finish_r_m2k_w"]) / 1000
             emitters[name] = Emitter(room, circuit, pipe_conductance, row["flow_l_min"],
-                                     slab_capacity, room_conductance, row["travel_s"])
+                                     slab_capacity, room_conductance, row["travel_s"], row["local_sensor_warming_c"],
+                                     row["local_sensor_bias_c"], row["report_valve_opening"])
         else:
             _positive(row["rated_kw"], row["rated_delta_k"], row["width_m"], row["height_m"])
             # Scale the generic rating from the preset's reference size.
@@ -224,7 +225,9 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
             reference_area = reference["width_m"] * reference["height_m"]
             output = row["rated_kw"] * row["width_m"] * row["height_m"] / reference_area
             emitters[name] = Emitter(room, circuit, output / row["rated_delta_k"], row["flow_l_min"],
-                                     travel_s=row["travel_s"])
+                                     travel_s=row["travel_s"], local_sensor_warming_c=row["local_sensor_warming_c"],
+                                     local_sensor_bias_c=row["local_sensor_bias_c"],
+                                     report_valve_opening=row["report_valve_opening"])
 
     outdoor_units = {}
     for name, row in rows["outdoor_units"].items():
@@ -240,7 +243,9 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
             sources.append(Source(name, "electricity", row["capacity_kw"], 1, direct_zone=room,
                                   modulating=True, reversible=row["reversible"], outdoor_unit=unit,
                                   room_setpoint_control=row["room_setpoint_control"],
-                                  fan_control=row["fan_control"], report_heat=row["report_heat"]))
+                                  fan_control=row["fan_control"], report_heat=row["report_heat"],
+                                  indoor_fan_kw=row["indoor_fan_kw"], report_indoor_humidity=row["report_indoor_humidity"],
+                                  humidity_setpoint_control=row["humidity_setpoint_control"]))
         elif preset == "air_to_water":
             sources.append(Source(
                 name, "electricity", row["capacity_kw"], row["cop"], modulating=True,
@@ -292,11 +297,14 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
             row["outdoor_c"], occupied_gains_kw=row["occupancy_kw"], appliance_kw=row["appliance_kw"],
             electricity_price_kwh=row["electricity_price"], gas_price_kwh=row["gas_price"],
             forecast_outdoor_c=row["forecast_outdoor_c"], ground_c=settings["ground_c"],
+            outdoor_humidity_pct=row["outdoor_humidity_pct"],
         )) for row in weather
     )
     if any(row[key] < 0 for row in weather
            for key in ("direct_kw_m2", "diffuse_kw_m2", "occupancy_kw", "appliance_kw")):
         raise ValueError("Weather irradiance and heat gains must be non-negative")
+    if any(not 0 <= row["outdoor_humidity_pct"] <= 100 for row in weather):
+        raise ValueError("Outdoor humidity must be between zero and 100")
     if any(time % step for time in times):
         raise ValueError("Weather changes must align with the simulation step")
 

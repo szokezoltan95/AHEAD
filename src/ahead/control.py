@@ -33,6 +33,7 @@ class Observation:
     electricity_price_kwh: float | None = None
     gas_price_kwh: float | None = None
     forecast_outdoor_c: float | None = None
+    indoor_humidity: Mapping[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,11 @@ class ControlPlan:
     room_setpoints_c: Mapping[str, float] = field(default_factory=dict)
     fan_fractions: Mapping[str, float] = field(default_factory=dict)
     water_setpoints_c: Mapping[str, float] = field(default_factory=dict)
+    indoor_fans: Mapping[str, float] = field(default_factory=dict)
+    dry_sources: frozenset[str] = frozenset()
+    climate_states: Mapping[str, Mapping[str, float | str | bool | None]] = field(default_factory=dict)
+    fan_only_sources: frozenset[str] = frozenset()
+    stopped_sources: frozenset[str] = frozenset()
 
 
 class Controller(Protocol):

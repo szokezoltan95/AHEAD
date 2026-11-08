@@ -22,6 +22,9 @@ max_heat_kw = 3.0
 efficiency = 3.3
 efficiency_per_outdoor_k = 0.09
 modulating = true
+reversible = true
+fan_control = true
+report_heat = false
 min_on_s = 240
 min_off_s = 180
 
@@ -30,6 +33,7 @@ name = "gas_boiler"
 fuel = "gas"
 max_heat_kw = 10
 efficiency = 0.88
+report_heat = false
 min_on_s = 120
 min_off_s = 180
 

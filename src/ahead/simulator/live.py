@@ -14,6 +14,7 @@ from time import monotonic
 import paho.mqtt.client as mqtt
 
 from ahead.control import ControlPlan, Observation
+from ahead.simulator.climate import ClimateControls
 from ahead.simulator.console import Console, serve_console
 from ahead.simulator.scenario import Sample, Scenario, load_scenario
 
@@ -64,6 +65,9 @@ class MqttHouse:
         self.scenario = scenario
         self.house_id = house_id
         self.root = f"ahead/{house_id}"
+        self.climate = ClimateControls(scenario.house, self.root)
+        self._resume_topic = f"{self.root}/automatic_heat_calls/press"
+        self._elapsed_s = 0.0
         self.discovery_registry = discovery_registry if discovery_registry is not None else {}
         self.discovery_topic = f"{discovery_prefix}/device/ahead_{house_id}/config"
         equipment = scenario.house.equipment
@@ -80,13 +84,29 @@ class MqttHouse:
                 ) if allowed
             ]
         )
-        for identifier in (house_id, *scenario.house.zones, *equipment.sources):
+        for identifier in (house_id, *scenario.house.zones, *equipment.sources, *equipment.valves):
             if not IDENTIFIER.fullmatch(identifier):
                 raise ValueError(f"MQTT identifiers must contain only letters, digits, - or _: {identifier}")
         self._commands = {
             self._topic(actuator.id, "set"): actuator for actuator in self.actuators
         }
         self._requests: dict[Actuator, float] = {}
+        self._local_requests: set[Actuator] = set()
+        self._hydronic = {
+            f"hydronic_{actuator.key}": actuator for actuator in self.actuators
+            if self._publish_actuator(actuator) and actuator.kind == "source"
+        }
+        self._water_targets = {
+            actuator.key: actuator for actuator in self.actuators if actuator.kind == "water_setpoint"
+        }
+        self.remote_devices = self.climate.remote_catalog()
+        for key, actuator in self._hydronic.items():
+            fields = {"mode": {"label": "Heat request", "options": ["auto", "on", "off"]}}
+            if actuator.modulating:
+                fields["output"] = {"label": "Manual output request", "min": 1, "max": 100, "step": 1, "unit": "%"}
+            if actuator.key in self._water_targets:
+                fields["water_target"] = {"label": "Water target", "min": 20, "max": 80, "step": 1, "unit": "°C"}
+            self.remote_devices[key] = {"group": "sources", "device": actuator.key, "fields": fields}
         self._available: frozenset[str] = frozenset()
         self._lock = Lock()
         self.connected = Event()
@@ -97,6 +117,50 @@ class MqttHouse:
     @property
     def availability_topic(self) -> str:
         return f"{self.root}/availability"
+
+    def _publish_actuator(self, actuator):
+        return (actuator.kind in {"source", "water_setpoint"}
+                and self.scenario.house.sources[actuator.key].direct_zone is None)
+
+    def remote_command(self, device, field, value):
+        if (not isinstance(device, str) or not isinstance(field, str)
+                or type(value) not in (str, int, float)):
+            raise ValueError("Expected device, setting, and a text or numeric value")
+        if field not in self.remote_devices.get(device, {}).get("fields", {}):
+            raise ValueError("This device does not support that setting")
+        payload = str(value).encode()
+        with self._lock:
+            unit = self.climate.units.get(device)
+            if unit:
+                self._apply_climate_command(unit, field, payload)
+                return
+            actuator = self._hydronic[device]
+            if field == "mode":
+                if value == "auto":
+                    self._requests.pop(actuator, None)
+                    self._local_requests.discard(actuator)
+                    return
+                if value not in ("on", "off"):
+                    raise ValueError("Unsupported heat request mode")
+                request = (self._requests.get(actuator) or 1.0) if value == "on" else 0.0
+            elif field == "output":
+                request = actuator.parse(payload)
+                if not request:
+                    raise ValueError("Use Off to stop the heat request")
+            else:
+                actuator = self._water_targets[actuator.key]
+                request = actuator.parse(payload)
+            self._requests[actuator] = request
+            self._local_requests.add(actuator)
+
+    def _apply_climate_command(self, unit, field, payload):
+        unit.apply(field, payload, self._elapsed_s)
+        if field in {"mode", "target", "preset", "fan", "humidity_target"}:
+            kinds = {"valve"} if unit.kind == "trv" else {"source", "room_setpoint", "fan"}
+            for actuator in self.actuators:
+                if actuator.kind in kinds and actuator.key == unit.name:
+                    self._requests.pop(actuator, None)
+                    self._local_requests.discard(actuator)
 
     def discovery(self) -> dict:
         components = {}
@@ -127,6 +191,8 @@ class MqttHouse:
         for key, label in (("electricity_price", "Electricity tariff"), ("gas_price", "Gas tariff")):
             components[key] = self._sensor(key, label, None)
         for actuator in self.actuators:
+            if not self._publish_actuator(actuator):
+                continue
             kind = "number" if actuator.modulating else "switch"
             key = actuator.id
             label = actuator.key.replace("_", " ").title()
@@ -156,6 +222,38 @@ class MqttHouse:
                         power_key, f"{actuator.key.replace('_', ' ').title()} heat output", "kW", "power"
                     )
             components[key] = component
+        identifier = f"ahead_{self.house_id}"
+        children = []
+        for unit in self.climate.units.values():
+            availability = [{"topic": self.availability_topic}]
+            if unit.kind == "ac":
+                availability.append({"topic": self._topic("source_"+unit.name, "availability")})
+            name = unit.name.replace("_", " ").title()
+            label = "HVAC"
+            if unit.kind == "trv":
+                label = "Floor thermostat" if self.scenario.house.hydronics.emitters[unit.name].slab_capacity else "TRV"
+            children.append({
+                "identifiers": [identifier+"_"+unit.key],
+                "name": f"{name} {label}",
+                "components": self.climate.components(unit, identifier, availability),
+            })
+        for actuator in self._hydronic.values():
+            name = actuator.key
+            device_components = {actuator.id: components.pop(actuator.id)}
+            for key in (f"water_setpoint_{name}", f"heat_{name}"):
+                if key in components:
+                    device_components[key] = components.pop(key)
+            children.append({
+                "identifiers": [identifier+"_hydronic_"+name],
+                "name": name.replace("_", " ").title(),
+                "components": device_components,
+            })
+        if any(unit.kind == "trv" for unit in self.climate.units.values()):
+            components["automatic_heat_calls"] = {
+                "platform":"button", "name":"Resume automatic heat calls",
+                "unique_id":identifier+"_automatic_heat_calls", "command_topic":self._resume_topic,
+                "availability":[{"topic":self.availability_topic}], "qos":1,
+            }
         return {
             "device": {
                 "identifiers": [f"ahead_{self.house_id}"],
@@ -165,6 +263,7 @@ class MqttHouse:
             },
             "origin": {"name": "AHEAD", "support_url": "https://github.com/szokezoltan95/AHEAD"},
             "components": components,
+            **({"child_devices": children} if children else {}),
         }
 
     def _sensor(self, key, name, unit, device_class=None, state_class="measurement") -> dict:
@@ -186,26 +285,69 @@ class MqttHouse:
         if reason_code.is_failure:
             LOGGER.error("MQTT connection rejected: %s", reason_code)
             return
-        if self._commands:
-            client.subscribe([(topic, 1) for topic in self._commands])
+        topics = [*self._commands,*self.climate.commands,self._resume_topic]
+        client.subscribe([(topic, 1) for topic in topics])
         discovery = self.discovery()
+        self._discovery_removals(discovery)
         components = discovery["components"]
-        current = {key: item["platform"] for key, item in components.items()}
-        for key in self.discovery_registry.keys() - current.keys():
-            components[key] = {"platform": self.discovery_registry[key]}
+        child_components = {name for child in discovery.get("child_devices", ())
+                            for name, component in child["components"].items() if "unique_id" in component}
+        for actuator in self.actuators:
+            if not self._publish_actuator(actuator):
+                components.setdefault(actuator.id, {"platform": "number" if actuator.modulating else "switch"})
+            if actuator.kind == "source" and f"heat_{actuator.key}" not in child_components:
+                components.setdefault(f"heat_{actuator.key}", {"platform": "sensor"})
         client.publish(self.discovery_topic, json.dumps(discovery), qos=1, retain=True)
-        self.discovery_registry.update(current)
         self.connected.set()
         LOGGER.info("Connected to MQTT as %s", self.house_id)
+
+    def _discovery_removals(self, discovery):
+        registry = self.discovery_registry
+        groups = [(None, discovery["components"])]
+        for child in discovery.get("child_devices", ()):
+            groups.append((child["identifiers"][0], child["components"]))
+        active = {key for key, _ in groups}
+        active_components = {name for _, components in groups for name in components}
+        for key, components in groups:
+            previous = registry.setdefault(key, {})
+            for name in previous.keys() - active_components:
+                components[name] = {"platform":previous[name]}
+            previous.update({name:item["platform"] for name,item in components.items()})
+        for key in registry.keys() - active:
+            removed = {name: {"platform": platform} for name, platform in registry[key].items()
+                       if name not in active_components}
+            if removed:
+                discovery.setdefault("child_devices", []).append({"identifiers": [key], "components": removed})
 
     def on_disconnect(self, client, userdata, flags, reason_code, properties):
         self.connected.clear()
         with self._lock:
-            self._requests.clear()
+            self._requests = {key: value for key, value in self._requests.items() if key in self._local_requests}
 
     def on_message(self, client, userdata, message):
+        if message.retain:
+            return
+        if message.topic == self._resume_topic:
+            if message.payload == b"PRESS":
+                with self._lock:
+                    self._requests = {
+                        actuator:value for actuator,value in self._requests.items()
+                        if not (actuator.kind == "source" and
+                                self.scenario.house.sources[actuator.key].direct_zone is None)
+                    }
+                    self._local_requests.intersection_update(self._requests)
+            return
+        climate = self.climate.commands.get(message.topic)
+        if climate:
+            unit, field = climate
+            try:
+                with self._lock:
+                    self._apply_climate_command(unit, field, message.payload)
+            except (UnicodeDecodeError, ValueError, KeyError):
+                LOGGER.warning("Ignored invalid climate command for %s", unit.key)
+            return
         actuator = self._commands.get(message.topic)
-        if actuator is None or message.retain:
+        if actuator is None:
             return
         try:
             value = actuator.parse(message.payload)
@@ -216,20 +358,32 @@ class MqttHouse:
             if actuator.kind == "source" and actuator.key not in self._available:
                 return
             self._requests[actuator] = value
+            self._local_requests.discard(actuator)
         LOGGER.info("Accepted %s request: %s%s", actuator.id, actuator.state(value), actuator.limits[2]
                     if actuator.modulating else "")
 
     def decide(self, observation: Observation) -> ControlPlan:
         with self._lock:
             self._available = observation.available_sources
+            self._elapsed_s = observation.elapsed_s
             for actuator in self.actuators:
-                if actuator.kind == "source" and actuator.key not in self._available:
+                if (actuator.kind == "source" and actuator.key not in self._available
+                        and actuator not in self._local_requests):
                     self._requests.pop(actuator, None)
             requests = {kind: {} for kind in ("source", "valve", "room_setpoint", "fan", "water_setpoint")}
             for actuator, request in self._requests.items():
                 requests[actuator.kind][actuator.key] = request
-            return ControlPlan(requests["source"], requests["valve"], requests["room_setpoint"],
-                               requests["fan"], requests["water_setpoint"])
+            plan = self.climate.plan(observation, requests)
+            for key, actuator in self._hydronic.items():
+                name = actuator.key
+                manual = requests["source"].get(name)
+                mode = "auto" if manual is None else "on" if manual else "off"
+                target = self.scenario.house.hydronics.loops[self.scenario.house.sources[name].loop].target_c
+                plan.climate_states[key] = {
+                    "kind": "hydronic", "device": name, "mode": mode,
+                    "output": 100 * (manual or 1), "water_target": requests["water_setpoint"].get(name, target),
+                }
+            return plan
 
     def publish_state(self, client, sample: Sample) -> None:
         readings = {
@@ -242,7 +396,8 @@ class MqttHouse:
             "electricity_price": sample.observation.electricity_price_kwh,
             "gas_price": sample.observation.gas_price_kwh,
             **{f"heat_{name}": value for name, value in self.scenario.house.source_heat_kw.items()
-               if self.scenario.house.sources[name].report_heat},
+               if self.scenario.house.sources[name].report_heat
+               and self.scenario.house.sources[name].direct_zone is None},
         }
         if self.scenario.environment:
             readings["forecast"] = sample.observation.forecast_outdoor_c
@@ -268,15 +423,16 @@ class MqttHouse:
                 requested = sample.plan.sources
                 status = "online" if actuator.key in sample.observation.available_sources else "offline"
                 client.publish(self._topic(actuator.id, "availability"), status, qos=1, retain=True)
-            else:
-                requested = {
-                    "valve": sample.plan.valves, "room_setpoint": sample.plan.room_setpoints_c,
-                    "water_setpoint": sample.plan.water_setpoints_c, "fan": sample.plan.fan_fractions,
-                }[actuator.kind]
-            default = 0 if actuator.kind in {"source", "valve"} else None
+            if not self._publish_actuator(actuator):
+                continue
+            if actuator.kind == "water_setpoint":
+                requested = sample.plan.water_setpoints_c
+            source = self.scenario.house.sources[actuator.key]
+            default = 0 if actuator.kind == "source" else self.scenario.house.hydronics.loops[source.loop].target_c
             value = requested.get(actuator.key, default)
             state = "None" if value is None else actuator.state(value)
             client.publish(self._topic(actuator.id, "state"), state, retain=True)
+        self.climate.publish(client, sample)
         client.publish(self.availability_topic, "online", qos=1, retain=True)
 
 
@@ -295,9 +451,8 @@ def run_live(scenario: Scenario, host: str, port: int, house_id: str,
     client.connect_async(host, port, keepalive=15)
     client.loop_start()
     try:
-        while not bridge.connected.wait(timeout=0.5):
-            if stop.is_set() or (console and console.changed.is_set()):
-                return
+        if console:
+            console.bind_remote(bridge.remote_devices, bridge.remote_command)
         clock_start = monotonic()
         for sample in scenario.run(bridge, continuous=True):
             if stop.wait(max(0, clock_start + sample.end_s - monotonic())) or (
@@ -310,6 +465,8 @@ def run_live(scenario: Scenario, host: str, port: int, house_id: str,
                 if bridge.connected.is_set():
                     bridge.publish_state(client, sample)
     finally:
+        if console:
+            console.bind_remote({}, None)
         if client.is_connected():
             message = client.publish(bridge.availability_topic, "offline", qos=1, retain=True)
             try:

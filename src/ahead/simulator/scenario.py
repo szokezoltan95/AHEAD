@@ -90,6 +90,7 @@ class Scenario:
                 electricity_price_kwh=conditions.electricity_price_kwh,
                 gas_price_kwh=conditions.gas_price_kwh,
                 forecast_outdoor_c=conditions.forecast_outdoor_c,
+                indoor_humidity=self.house.indoor_humidity,
             )
             plan = controller.decide(observation)
             end_s = start_s + self.step_s

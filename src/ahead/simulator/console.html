@@ -66,6 +66,11 @@
 <section class="panel live-inspector" id="live-inspector">
     <div class="live-panel-heading"><h2 id="reading-title">Overview</h2>
         <button id="live-overview" data-icon="activity" hidden>House overview</button></div>
+    <section id="live-remote" class="live-remote" hidden>
+        <h3>Device controls</h3>
+        <div id="live-remote-fields"></div>
+        <p id="live-remote-status" role="status" hidden></p>
+    </section>
     <div class="live-inspector-layout">
         <div><h3>Readings</h3><div id="readings"></div></div>
         <div><h3>Recent trend</h3><label class="muted">Value <select id="trend"></select></label><div id="chart"></div></div>
@@ -395,6 +400,7 @@ function render(state) {
         `Elapsed ${new Date(state.elapsed_s*1000).toISOString().slice(11,19)} · Day ${Math.floor(state.elapsed_s/86400)+1}`;
     drawLivePlan(state);
     drawLiveDashboard(state);
+    drawDeviceRemote(state);
     drawNetworkViews(state);
     if ($("live-json").open) $("full").textContent = JSON.stringify(state,null,2);
     const key = JSON.stringify(visibleGroups.map(group => Object.entries(state[group] || {}).map(([id,item]) =>

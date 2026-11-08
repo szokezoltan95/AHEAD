@@ -33,11 +33,16 @@ class LiveTests(unittest.TestCase):
         ))
 
     def test_discovery_matches_command_and_state_topics(self):
-        components = self.bridge.discovery()["components"]
+        discovery = self.bridge.discovery()
+        components = discovery["components"]
+        devices = {child["identifiers"][0]: child["components"] for child in discovery["child_devices"]}
         self.assertEqual(components["zone_kitchen"]["platform"], "sensor")
-        self.assertEqual(components["source_gas_boiler"]["platform"], "switch")
-        self.assertEqual(components["source_living_room_heat_pump"]["platform"], "number")
-        self.assertEqual(components["valve_kitchen"]["command_topic"], "ahead/test/valve_kitchen/set")
+        boiler = devices["ahead_test_hydronic_gas_boiler"]
+        self.assertEqual(boiler["source_gas_boiler"]["platform"], "switch")
+        self.assertNotIn("source_living_room_heat_pump", components)
+        self.assertNotIn("valve_kitchen", components)
+        self.assertNotIn("fan_living_room_heat_pump", components)
+        self.assertNotIn("heat_gas_boiler", boiler)
 
     def test_commands_drive_continuous_physics_past_batch_duration(self):
         self.command("source_gas_boiler", b"ON")

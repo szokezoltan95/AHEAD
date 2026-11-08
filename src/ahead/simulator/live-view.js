@@ -25,7 +25,8 @@ function equipmentStatus(group,item) {
     if (group === "sources") {
         if (item.status === "unavailable") return ["off","Unavailable"];
         if (item.heat_kw > .005) return ["heating","Heating"];
-        if (item.heat_kw < -.005) return ["cooling","Cooling"];
+        if (item.heat_kw < -.005) return ["cooling",item.thermostat?.mode === "dry" ? "Drying" : "Cooling"];
+        if (item.fan_kw > .0005) return ["flowing","Fan running"];
         if (item.request) return ["waiting",human(item.status || "requested")];
         return ["idle","Idle"];
     }
@@ -34,7 +35,8 @@ function equipmentStatus(group,item) {
         if (item.electrical_kw > .005) return [item.mode === "cooling" ? "cooling" : "heating",human(item.mode)];
     }
     if (group === "emitters" || group === "circuits") {
-        return item.flow_l_min > .005 ? ["flowing","Flowing"] : ["idle","No flow"];
+        if (item.flow_l_min > .005) return ["flowing","Flowing"];
+        return item.thermostat?.request > 0 ? ["waiting","Calling for heat"] : ["idle","No flow"];
     }
     if (group === "heat_exchangers" || group === "solar") {
         const output = group === "solar" ? (item.electrical_kw ?? item.delivered_kw) : item.heat_kw;
@@ -240,5 +242,67 @@ function drawLiveDashboard(state) {
         status.textContent = label;
         status.dataset.state = mode;
         reading.textContent = liveReading(group,item);
+    }
+}
+
+let activeRemote = "";
+const remoteInputs = new Map();
+
+function drawDeviceRemote(state) {
+    const panel = $("live-remote"), controls = $("live-remote-fields"), status = $("live-remote-status");
+    const [device, descriptor] = Object.entries(state.remote_devices || {}).find(([, item]) =>
+        selected === `${item.group}/${item.device}`) || [];
+    panel.hidden = !descriptor;
+    const layout = descriptor ? JSON.stringify([device, descriptor.fields]) : "";
+    if (activeRemote !== layout) {
+        activeRemote = layout;
+        controls.replaceChildren();
+        remoteInputs.clear();
+        status.hidden = true;
+        for (const [field, spec] of Object.entries(descriptor?.fields || {})) {
+            const label = el("label");
+            const title = el("span", spec.unit ? `${spec.label} (${spec.unit})` : spec.label);
+            title.id = `remote-label-${field}`;
+            label.append(title);
+            const input = el(spec.options ? "select" : "input");
+            input.setAttribute("aria-labelledby", title.id);
+            if (spec.options) {
+                for (const option of spec.options) {
+                    const node = el("option", human(option));
+                    node.value = option;
+                    input.append(node);
+                }
+            } else {
+                Object.assign(input, {type: "number", min: spec.min, max: spec.max, step: spec.step});
+            }
+            label.append(input);
+            controls.append(label);
+            const control = {input, pending: false, requestedAt: -1};
+            remoteInputs.set(field, control);
+            input.onchange = async () => {
+                if (!input.value || !input.reportValidity()) return;
+                const value = spec.options ? input.value : input.valueAsNumber;
+                control.pending = true;
+                input.disabled = true;
+                status.hidden = false;
+                status.textContent = "Sending…";
+                try {
+                    await api("/api/remote", {device, field, value});
+                    control.requestedAt = liveState.elapsed_s;
+                    if (activeRemote === layout) status.textContent = `${spec.label} updated.`;
+                } catch (error) {
+                    if (activeRemote === layout) status.textContent = error.message;
+                } finally {
+                    input.disabled = false;
+                    control.pending = false;
+                }
+            };
+        }
+    }
+    const values = state.remote_state?.[device] || {};
+    for (const [field, control] of remoteInputs) {
+        if (!control.pending && state.elapsed_s > control.requestedAt && document.activeElement !== control.input) {
+            control.input.value = values[field] ?? "";
+        }
     }
 }

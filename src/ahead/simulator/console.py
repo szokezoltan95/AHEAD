@@ -1,4 +1,4 @@
-"""Local, read-only telemetry and draft/apply configuration over HTTP."""
+"""Local telemetry, device controls, and project configuration over HTTP."""
 
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +23,8 @@ class Console:
         self.applied = None
         self.pending = None
         self.initial_state = None
+        self.remote_devices = {}
+        self.remote_callback = None
         self.snapshot = {"status": "waiting for simulator"}
         if path.exists():
             saved = json.loads(path.read_text("utf-8"))
@@ -66,6 +68,19 @@ class Console:
                 self.snapshot = {"status": "applying project"}
                 self.changed.set()
 
+    def bind_remote(self, devices, callback):
+        with self.lock:
+            self.remote_devices = devices
+            self.remote_callback = callback
+
+    def remote_command(self, payload):
+        if not isinstance(payload, dict) or set(payload) != {"device", "field", "value"}:
+            raise ValueError("Expected device, field, and value")
+        with self.lock:
+            if self.remote_callback is None or self.changed.is_set():
+                raise ValueError("Device controls are unavailable while the simulator starts")
+            self.remote_callback(**payload)
+
     def record(self, scenario, sample, diagnostic):
         state = scenario.house.diagnostics()
         for name, room in state["rooms"].items():
@@ -89,8 +104,25 @@ class Console:
                 surface["heat_into_room_kw"] = (second - first) * surface["model_conductance_kw_k"]
             for name, value in state["balance"].get("solar_collector_kw", {}).items():
                 diagnostic["solar"][name]["delivered_kw"] = value
+        climates = sample.plan.climate_states
+        remote_state = {}
+        state_fields = {"target": "target_c", "sensor_source": "selected_sensor_source",
+                        "external_temperature": "external_c", "sensor_offset": "sensor_offset_c",
+                        "overshoot": "overshoot_correction_c"}
+        for key, unit in climates.items():
+            if key in self.remote_devices:
+                remote_state[key] = {
+                    field: unit.get(state_fields.get(field, field))
+                    for field in self.remote_devices[key]["fields"]
+                }
+            group = "emitters" if unit["kind"] == "trv" else "sources"
+            if unit["device"] in state[group]:
+                # The physics diagnostics are shared with the simulator, so copy
+                # the selected entry before adding controller-specific fields.
+                state[group] = state[group] | {unit["device"]:state[group][unit["device"]] | {"controller" if unit["kind"] == "hydronic" else "thermostat": unit}}
         result = {
             "status": "running", "elapsed_s": sample.end_s,
+            "remote_devices": self.remote_devices, "remote_state": remote_state,
             "weather": {"actual_outdoor_c": sample.actual_outdoor_c,
                         "reported_outdoor_c": sample.observation.outdoor_c,
                         "forecast_outdoor_c": sample.observation.forecast_outdoor_c,
@@ -171,7 +203,7 @@ def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
             if not self.local_request():
                 return
             route = urlsplit(self.path).path
-            if route not in ("/api/project", "/api/apply"):
+            if route not in ("/api/project", "/api/apply", "/api/remote"):
                 self.send({"error": "Unknown endpoint"}, 404)
                 return
             if self.headers.get_content_type() != "application/json":
@@ -185,15 +217,19 @@ def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 1_000_000:
                     raise ValueError("Configuration body must be between 1 byte and 1 MB")
-                project = json.loads(self.rfile.read(length))
-                console.update(project, route == "/api/apply")
+                payload = json.loads(self.rfile.read(length))
+                if route == "/api/remote":
+                    console.remote_command(payload)
+                else:
+                    console.update(payload, route == "/api/apply")
             except (ValueError, TypeError, KeyError, OverflowError) as error:
                 self.send({"error": str(error)}, 400)
                 return
             except OSError:
                 self.send({"error": "Could not persist the configuration"}, 500)
                 return
-            self.send({"status": "saved" if route == "/api/project" else "applying"})
+            self.send({"status": {"/api/project": "saved", "/api/apply": "applying",
+                                  "/api/remote": "accepted"}[route]})
 
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     Thread(target=server.serve_forever, daemon=True).start()

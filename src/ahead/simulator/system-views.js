@@ -245,7 +245,7 @@ function thermalLinks(state,filter) {
             const loop = value.loop && item("circuits",value.loop);
             if (room || loop || group === "pipes") {
                 const target = room ? item("rooms",room) : loop || item(null,"Surroundings");
-                add(item(group,name),target,"equipment",value.room_heat_kw ?? value.heat_kw ?? value.heat_loss_kw);
+                add(item(group,name),target,"equipment",value.room_heat_kw ?? value.sensible_heat_kw ?? value.heat_kw ?? value.heat_loss_kw);
             }
         }
         for (const value of Object.values(state.heat_exchangers || {})) {
