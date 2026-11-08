@@ -136,6 +136,7 @@ class House:
         emitters: Mapping[str, Emitter] | None = None,
         outdoor_units: Mapping[str, OutdoorUnit] | None = None,
         exchangers: Mapping[str, HeatExchanger] | None = None,
+        pipe_network=None,
     ):
         self.zones = {zone.name: zone for zone in zones}
         self.sources = {source.name: source for source in sources}
@@ -194,7 +195,7 @@ class House:
             _check((emitter.kw_k, emitter.flow_l_min), positive=True)
             _check((emitter.slab_capacity, emitter.slab_to_room_kw_k, emitter.travel_s))
             air_conductance[emitter.zone] += emitter.slab_to_room_kw_k or emitter.kw_k
-        self.hydronics = Hydronics(loops, emitters, self._air)
+        self.hydronics = Hydronics(loops, emitters, self._air, pipe_network)
         self._first_loop = next(iter(loops), None)
         exchanger_rates = dict.fromkeys(loops, 0.0)
         for name, exchanger in self.exchangers.items():
@@ -255,6 +256,13 @@ class House:
                 (z.air_fabric_kw_k + z.fabric_outside_kw_k + z.ground_kw_k) / z.fabric_capacity)
             for z in zones
         )
+        if pipe_network:
+            max_rate += sum(
+                pipe.kw_k / (self.zones[pipe.room].fabric_capacity
+                             if pipe.mounting in ("in_wall", "underfloor")
+                             else self.zones[pipe.room].air_capacity)
+                for pipe in pipe_network.pipes.values() if pipe.room
+            )
         self._max_rate = max((max_rate, *self.hydronics.rates())) + max(exchanger_rates.values(), default=0)
 
     def reset_run_clock(self) -> None:
@@ -313,6 +321,7 @@ class House:
                 for name, temperature in self.hydronics.water.items()
             },
             "emitters": self.hydronics.details,
+            "pipes": self.hydronics.pipe_network.details if self.hydronics.pipe_network else {},
             "sources": self._source_details,
             "outdoor_units": self._outdoor_details,
             "heat_exchangers": self._exchanger_details,
@@ -381,13 +390,15 @@ class House:
             self._step(step_s / 3600, conditions, plan, available_sources)
             self.elapsed_s += step_s
             remaining_s -= step_s
-        self.hydronics.exchange(self._air, plan.valves, 0)
+        self.hydronics.exchange(self._air, plan.valves, 0, fabric=self._fabric,
+                                outdoor=conditions.outdoor_c, ground=conditions.ground_c)
 
     def _step(self, dt_h, conditions, plan, available_sources):
         air_flow = dict.fromkeys(self.zones, 0.0)
         fabric_flow = dict.fromkeys(self.zones, 0.0)
         water_flow, emitter_heat, slab_heat = self.hydronics.exchange(
-            self._air, plan.valves, dt_h * 3600
+            self._air, plan.valves, dt_h * 3600, fabric=self._fabric,
+            outdoor=conditions.outdoor_c, ground=conditions.ground_c
         )
         electricity_kw = conditions.appliance_kw
         gas_kw = heat_kw = 0.0
@@ -405,12 +416,15 @@ class House:
             ground = (conditions.ground_c - fabric) * zone.ground_kw_k
             gains = zone.base_gains_kw + appliance_gains
             sun = conditions.solar_kw_m2 * zone.solar_area_m2 + conditions.solar_by_zone_kw.get(name, 0)
-            air_flow[name] = coupling + ventilation + gains + emitter_heat[name]
-            fabric_flow[name] = -coupling + shell + ground + sun
+            pipe_air = self.hydronics.pipe_air_heat[name]
+            pipe_fabric = self.hydronics.pipe_fabric_heat[name]
+            air_flow[name] = coupling + ventilation + gains + emitter_heat[name] + pipe_air
+            fabric_flow[name] = -coupling + shell + ground + sun + pipe_fabric
             self._room_flux[name] = {
                 "fabric_to_air_kw": coupling, "ventilation_kw": ventilation, "envelope_kw": shell,
                 "ground_kw": ground, "internal_gains_kw": gains, "solar_kw": sun, "emitters_kw": emitter_heat[name],
                 "neighbours_kw": 0.0, "direct_heat_kw": 0.0,
+                "pipe_to_air_kw": pipe_air, "pipe_to_fabric_kw": pipe_fabric,
             }
 
         transfers = [(link.first, link.second, link.kw_k) for link in self._partitions]

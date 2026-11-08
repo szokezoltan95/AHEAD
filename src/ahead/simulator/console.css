@@ -1,0 +1,89 @@
+:root {
+    color-scheme: light dark;
+    font: 15px/1.45 "Segoe UI", system-ui, sans-serif;
+    --background: #eaf0f6; --panel: #fff; --soft: #f2f6fa; --ink: #172940;
+    --muted: #52667a; --line: #c3d2df; --blue: #086eab; --blue-soft: #dceffd;
+    --supply: #c94135; --return: #1379ba; --room: #e0effb; --grid: #d4e1eb;
+    --shadow: 0 8px 25px #182f4914;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --background: #111c2a; --panel: #192a3c; --soft: #152334; --ink: #e6eff8;
+        --muted: #a7bacd; --line: #425a70; --blue: #72c5f8; --blue-soft: #183e58;
+        --supply: #ff8c7d; --return: #75c9ff; --room: #233d56; --grid: #304860;
+        --shadow: 0 8px 25px #0004;
+    }
+}
+* { box-sizing: border-box; }
+body { margin: 0 auto; max-width: 1340px; padding: 1.1rem; background: var(--background); color: var(--ink); }
+header, nav, .toolbar { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; }
+header { border-radius: 16px; color: #f5faff; background: linear-gradient(115deg,#162e4a,#144f69); padding: 1rem 1.3rem; box-shadow: var(--shadow); }
+header h1 { font-size: 1.45rem; margin: 0 auto 0 0; font-weight: 660; }
+header h1 small { display: block; font-size: .78rem; font-weight: 450; }
+header .icon { width: 2rem; height: 2rem; }
+nav { padding: .8rem 0; border-bottom: 1px solid var(--line); }
+button,input,select { font: inherit; padding: .42rem .62rem; color: inherit; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+button { display: inline-flex; align-items: center; justify-content: center; gap: .38rem; cursor: pointer; }
+button:hover { border-color: var(--blue); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+button[aria-pressed=true], .primary { background: var(--blue-soft); border-color: var(--blue); color: var(--blue); font-weight: 650; }
+button:disabled { opacity: .45; cursor: default; }
+.icon { width: 1.1rem; height: 1.1rem; flex: none; vertical-align: -.2rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+main { padding-top: .65rem; }
+details,fieldset,.panel { border: 1px solid var(--line); border-radius: 11px; padding: .8rem; margin: .65rem 0; background: var(--panel); }
+.panel { box-shadow: var(--shadow); }
+summary { cursor: pointer; font-weight: 650; }
+summary .icon { margin: 0 .35rem 0 .15rem; color: var(--blue); }
+fieldset { display: grid; grid-template-columns: repeat(auto-fit,minmax(155px,1fr)); gap: .6rem; min-width: 0; }
+legend { font-weight: 600; }
+label { display: grid; gap: .18rem; min-width: 0; }
+input,select { min-width: 0; width: 100%; }
+.toolbar { margin: .6rem 0; }
+.toolbar label { display: flex; align-items: center; gap: .4rem; }
+.toolbar select { width: auto; }
+.schematic { overflow: auto; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
+svg text { fill: currentColor; font: 12px system-ui,sans-serif; }
+.schematic svg rect { fill: var(--soft); stroke: var(--line); }
+svg g[tabindex] { cursor: pointer; }
+.schematic svg g:focus rect,.schematic svg g.selected rect { stroke: var(--blue); stroke-width: 2; }
+.schematic svg line { stroke: var(--line); stroke-width: 1.5; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th,td { text-align: left; padding: .28rem .45rem; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+th { width: 48%; font-weight: 500; }
+small,.muted { color: var(--muted); }
+header small { color: #cfe6f5; }
+#connection { border: 1px solid #ffffff4d; padding: .3rem .65rem; border-radius: 999px; }
+#message,#plan-status { min-height: 1.25rem; white-space: pre-wrap; }
+#message.error,#plan-status.error { color: var(--supply); }
+[hidden] { display: none!important; }
+.plan-card h2, .panel h2 { margin: .1rem 0 .55rem; font-size: 1.14rem; }
+.plan-help { margin: .5rem 0; color: var(--muted); }
+.plan-canvas { display: block; width: 100%; height: clamp(320px,58vh,660px); border: 1px solid var(--line); border-radius: 9px; background: var(--soft); touch-action: none; user-select: none; }
+#plan-svg[data-tool]:not([data-tool="select"]) { cursor: crosshair; }
+.plan-room { fill: var(--room); stroke: var(--muted); stroke-width: 1.4; }
+.plan-room.unheated { fill: var(--panel); }
+.plan-room.legacy { stroke-dasharray: 6 3; }
+.plan-room.preview { fill: var(--blue-soft); stroke: var(--blue); stroke-dasharray: 5 3; }
+.plan-wall { stroke: transparent; stroke-width: 12; cursor: pointer; }
+.plan-wall:hover { stroke: var(--blue); stroke-opacity: .4; }
+.plan-opening { stroke: var(--blue); stroke-width: 4; pointer-events: none; }
+.plan-label { pointer-events: none; font-weight: 650; }
+.plan-meta { pointer-events: none; fill: var(--muted); }
+.plan-pipe { stroke-width: 3.8; stroke-linecap: round; fill: none; }
+.plan-pipe.supply,.pipe-supply { color: var(--supply); stroke: var(--supply); }
+.plan-pipe.return,.pipe-return { color: var(--return); stroke: var(--return); }
+.plan-pipe.riser { stroke-dasharray: 4 4; }
+.pipe-target { stroke: transparent; stroke-width: 10; cursor: pointer; }
+.plan-point { fill: var(--panel); stroke: var(--muted); stroke-width: 1.6; cursor: pointer; }
+.plan-point.active { stroke: var(--blue); stroke-width: 3; }
+.plan-equipment { fill: var(--panel); stroke: var(--blue); stroke-width: 1.5; cursor: pointer; }
+.plan-device-icon { pointer-events: none; color: var(--blue); }
+dialog { width: min(94vw,590px); max-height: 85vh; overflow: auto; padding: 1rem; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 13px; box-shadow: var(--shadow); }
+dialog::backdrop { background: #0a203b82; }
+dialog h2 { margin: .15rem 0 .5rem; font-size: 1.2rem; }
+dialog form { display: grid; grid-template-columns: repeat(auto-fit,minmax(210px,1fr)); gap: .65rem; }
+dialog form > :not(label) { grid-column: 1 / -1; }
+label:has(input[type=checkbox]) { display: flex; align-items: center; flex-direction: row-reverse; justify-content: flex-end; gap: .45rem; }
+input[type=checkbox] { width: auto; }
+dialog .toolbar { margin-bottom: 0; }
+@media (max-width: 560px) { body { padding: .6rem; } header { padding: .7rem; } .toolbar { gap: .4rem; } }

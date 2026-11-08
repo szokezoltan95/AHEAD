@@ -3,45 +3,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AHEAD Simulator</title>
-<style>
-:root{color-scheme:light dark;font:15px system-ui,sans-serif;--line:#77868c;--blue:#197bb0}
-body{margin:0 auto;max-width:1180px;padding:1rem}
-header,nav,.toolbar{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
-header h1{font-size:1.45rem;margin:.35rem auto .35rem 0}
-nav{border-bottom:1px solid var(--line);padding:.5rem 0}
-button,input,select{font:inherit;padding:.35rem .55rem}
-button[aria-pressed=true]{outline:2px solid var(--blue)}
-button{cursor:pointer}
-main{padding-top:1rem}
-details,fieldset,.panel{border:1px solid var(--line);border-radius:4px;padding:.65rem;margin:.65rem 0}
-summary{cursor:pointer;font-weight:650}
-fieldset{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.5rem;min-width:0}
-legend{font-weight:600}
-label{display:grid;gap:.15rem;min-width:0}
-input,select{min-width:0;box-sizing:border-box;width:100%}
-.toolbar{margin:.6rem 0}
-.schematic{overflow:auto;border:1px solid var(--line);border-radius:4px}
-svg text{fill:currentColor;font:12px system-ui,sans-serif}
-svg rect{fill:Canvas;stroke:var(--line)}
-svg g[tabindex]{cursor:pointer}
-svg g:focus rect,svg g.selected rect{stroke:var(--blue);stroke-width:2}
-svg line{stroke:var(--line);stroke-width:1.5}
-table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
-th,td{text-align:left;padding:.28rem .45rem;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
-th{width:48%;font-weight:500}
-small,.muted{opacity:.78}
-#message{min-height:1.25rem;white-space:pre-wrap}
-#message.error{color:#d24634}
-[hidden]{display:none!important}
-</style>
-<header><h1>AHEAD · House simulator</h1><small id="connection">Connecting</small></header>
+<link rel="stylesheet" href="/assets/console.css">
+<header><span data-icon="house"></span><h1>AHEAD <small>House simulator</small></h1><small id="connection">Connecting</small></header>
 <nav>
-<button id="show-live" aria-pressed="true">Live</button>
-<button id="show-config" aria-pressed="false">Configure</button>
+<button id="show-live" data-icon="activity" aria-pressed="true">Live</button>
+<button id="show-config" data-icon="plan" aria-pressed="false">Configure</button>
 </nav>
 <main id="live">
 <p id="run-info"></p>
-<div class="schematic" id="schematic"></div>
+<section class="panel plan-card" id="live-plan" hidden>
+<div class="toolbar"><h2>Live floor plan</h2><label>Floor <select id="live-level"></select></label></div>
+<svg class="plan-canvas" id="live-svg" aria-label="Live floor plan"></svg>
+</section>
+<details open><summary>System schematic</summary><div class="schematic" id="schematic"></div></details>
 <div class="panel">
 <h2 id="reading-title">Overview</h2>
 <div id="readings"></div>
@@ -52,17 +26,42 @@ small,.muted{opacity:.78}
 <p><a href="/api/live" target="_blank" rel="noopener">Open live JSON</a></p>
 </main>
 <main id="configure" hidden>
-<p>Choose a preset, edit its values, and connect it to the rest of the house. Save a draft or apply it to start a new run.</p>
+<p>Draw the house, place equipment, and connect the heating pipes. Save a draft or apply it to start a new run.</p>
 <div class="toolbar">
-<button id="save">Save draft</button>
-<button id="apply">Apply and restart simulation</button>
-<button id="example">Load example into editor</button>
-<button id="download">Export JSON</button>
-<button id="import">Import JSON</button>
+<button id="save" data-icon="save">Save draft</button>
+<button id="apply" data-icon="play" class="primary">Apply and restart simulation</button>
+<button id="example" data-icon="house">Load example</button>
+<button id="blank" data-icon="plan">Start blank</button>
+<button id="download" data-icon="download">Export JSON</button>
+<button id="import" data-icon="upload">Import JSON</button>
 <input id="upload" type="file" accept=".json,application/json" hidden>
 </div>
 <div id="message" role="status"></div>
-<div id="forms"></div>
+<section class="panel plan-card">
+<h2>Floor plan</h2>
+<div class="toolbar">
+<label>Floor <select id="plan-level"></select></label><button id="add-level" data-icon="layers">Add floor</button>
+<button id="fit-plan" data-icon="fit">Fit</button><button id="arrange-plan" data-icon="room">Place unplaced rooms</button><button id="zoom-in" aria-label="Zoom in">+</button><button id="zoom-out" aria-label="Zoom out">−</button>
+</div>
+<div class="toolbar" aria-label="Drawing tools">
+<button data-tool="select" data-icon="cursor" aria-pressed="true">Select / move</button>
+<button data-tool="room" data-icon="room" aria-pressed="false">Draw room</button>
+<button data-tool="wall" data-icon="layers" aria-pressed="false">Wall / opening</button>
+<button data-tool="equipment" data-icon="radiator" aria-pressed="false">Place equipment</button>
+<button data-tool="pipe" data-icon="pipe" aria-pressed="false">Draw pipe</button>
+<button data-tool="junction" data-icon="junction" aria-pressed="false">Add junction</button>
+</div>
+<div class="toolbar" id="pipe-tools" hidden>
+<label>Circuit <select id="pipe-circuit"></select></label>
+<label>Run <select id="pipe-run"><option value="pair">Supply + return</option><option value="supply">Supply</option><option value="return">Return</option></select></label>
+<button id="end-route">End route</button>
+</div>
+<p id="plan-status" role="status" class="plan-help"></p>
+<svg class="plan-canvas" id="plan-svg" aria-label="Floor plan editor"></svg>
+<p class="plan-help"><span class="pipe-supply">● Supply</span> &nbsp; <span class="pipe-return">● Return</span> &nbsp; Grid 0.25 m · Select a pipe for mounting, offsets and height.</p>
+</section>
+<details><summary>Advanced configuration</summary><div id="forms"></div></details>
+<dialog id="plan-dialog"><h2 id="plan-dialog-title"></h2><form id="plan-form"></form></dialog>
 </main>
 <script>
 "use strict";
@@ -86,7 +85,7 @@ const references = {
 };
 let catalogue, project, selected = "", trendPath = "", lastTime = -1, schemaKey = "";
 let history = new Map();
-const visibleGroups = ["outdoor_units","sources","circuits","heat_exchangers","emitters","rooms","surfaces","solar"];
+const visibleGroups = ["outdoor_units","sources","circuits","heat_exchangers","emitters","rooms","surfaces","solar","pipes"];
 
 async function api(path, project) {
     const options = project === undefined ? {} : {
@@ -102,6 +101,7 @@ function showPage(page) {
     for (const name of ["live","configure"]) $(name).hidden = page !== name;
     $("show-live").setAttribute("aria-pressed", page === "live");
     $("show-config").setAttribute("aria-pressed", page === "configure");
+    if (page === "configure" && project) drawPlan();
 }
 $("show-live").onclick = () => showPage("live");
 $("show-config").onclick = () => showPage("configure");
@@ -112,7 +112,7 @@ function input(label, value, changed, options, whole = false, refreshed = null) 
     if (options) {
         field = el("select");
         for (const option of new Set([value, ...options])) {
-            const item = el("option", option || "Select…");
+            const item = el("option", option ? human(option) : "Select…");
             item.value = option;
             field.append(item);
         }
@@ -147,7 +147,9 @@ function redrawForms() {
         const details = el("details");
         details.dataset.section = section;
         details.open = open.has(section);
-        details.append(el("summary", `${names[section]} (${rows.length})`));
+        const summary = el("summary", `${names[section]} (${rows.length})`);
+        summary.prepend(icon(sectionIcons[section] || "layers"));
+        details.append(summary);
         const add = el("button","Add");
         const select = el("select");
         select.setAttribute("aria-label", `Preset for ${names[section]}`);
@@ -165,7 +167,19 @@ function redrawForms() {
         for (const [index,row] of rows.entries()) {
             const card = el("fieldset");
             card.append(el("legend", `${row.id} · ${human(row.preset)}`));
-            card.append(input("ID", row.id, value => row.id = value, null, false, redrawForms));
+            const originalId = row.id;
+            let editedId = originalId;
+            card.append(input("ID", originalId, value => editedId = value, null, false, () => {
+                if (editedId !== originalId) {
+                    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(editedId) || rows.some(item => item.id === editedId)) {
+                        message("Enter a unique ID using letters, digits, underscores or hyphens.",true);
+                    } else {
+                        row.id = editedId;
+                        renameReferences(section,originalId,editedId);
+                    }
+                }
+                redrawForms();
+            }));
             for (const [key, defaultValue] of Object.entries(presets[row.preset] || {})) {
                 let options = references[key] ? ["", ...(project[references[key]] || []).map(item => item.id)] : null;
                 if (key === "boundary") options = ["outdoors","room","ground","adiabatic"];
@@ -187,6 +201,7 @@ function redrawForms() {
         }
         $("forms").append(details);
     }
+    syncPlan();
 }
 
 function message(text, error = false) {
@@ -202,7 +217,7 @@ for (const [button,path,success] of [
     catch (error) { message(error.message,true); }
     finally { $("save").disabled = $("apply").disabled = false; }
 };
-$("example").onclick = () => { project = structuredClone(catalogue.example); redrawForms(); message("Example loaded into editor."); };
+$("example").onclick = () => { project = structuredClone(catalogue.example); fitted = false; redrawForms(); message("Example loaded into editor."); };
 $("download").onclick = () => {
     const link = el("a");
     link.href = URL.createObjectURL(new Blob([JSON.stringify(project,null,2)],{type:"application/json"}));
@@ -220,7 +235,7 @@ $("upload").onchange = async () => {
                     typeof row.preset !== "string" || !catalogue.presets[key][row.preset])))) {
             throw Error("Choose a valid AHEAD project file.");
         }
-        project = loaded; redrawForms(); message("Project loaded into editor.");
+        project = loaded; fitted = false; redrawForms(); message("Project loaded into editor.");
     } catch (error) { message(error.message,true); }
     finally { $("upload").value = ""; }
 };
@@ -308,8 +323,10 @@ function draw(state) {
         const [group,name] = id.split("/");
         const item = state[group][name];
         const node = svg("g",{tabindex:"0",role:"button","aria-label":id,"data-id":id});
-        const title = svg("text",{x:x+7,y:y+15}); title.textContent = name.length>21 ? name.slice(0,19)+"…" : name;
-        node.append(svg("rect",{x,y,width:145,height:42,rx:4}),title,svg("text",{x:x+7,y:y+32,"data-reading":""}));
+        const title = svg("text",{x:x+27,y:y+15}); title.textContent = name.length>18 ? name.slice(0,16)+"…" : name;
+        const symbol = icon(sectionIcons[group] || (group === "pipes" ? "pipe" : "layers"));
+        for (const [key,value] of Object.entries({x:x+7,y:y+6,width:14,height:14,class:"icon plan-device-icon"})) symbol.setAttribute(key,value);
+        node.append(svg("rect",{x,y,width:145,height:42,rx:6}),symbol,title,svg("text",{x:x+27,y:y+32,"data-reading":""}));
         const choose = () => { selected = selected === id ? "" : id; trendPath = ""; render(state); };
         node.onclick = choose;
         node.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); choose(); } };
@@ -319,6 +336,7 @@ function draw(state) {
 }
 function render(state) {
     $("connection").textContent = state.status;
+    drawLivePlan(state);
     $("run-info").textContent = state.elapsed_s === undefined ? state.status :
         `Elapsed ${new Date(state.elapsed_s*1000).toISOString().slice(11,19)} · ${Math.floor(state.elapsed_s/86400)} day(s) · Outdoors ${format(state.weather.actual_outdoor_c)} °C`;
     $("full").textContent = JSON.stringify(state,null,2);
@@ -331,7 +349,7 @@ function render(state) {
         const main = {
             heat_exchangers:[item.heat_kw,"kW"],rooms:[item.air_c,"°C"],circuits:[item.supply_c,"°C"],emitters:[item.room_heat_kw,"kW"],
             sources:[item.heat_kw,"kW"],outdoor_units:[item.electrical_kw,"kW"],
-            surfaces:[item.irradiance_kw_m2,"kW/m²"],solar:[item.electrical_kw ?? item.incident_kw,"kW"]
+            surfaces:[item.irradiance_kw_m2,"kW/m²"],pipes:[item.flow_l_min,"L/min"],solar:[item.electrical_kw ?? item.incident_kw,"kW"]
         }[group];
         node.querySelector("[data-reading]").textContent = `${format(main[0])} ${main[1]}`;
         node.classList.toggle("selected",node.dataset.id === selected);
@@ -364,6 +382,9 @@ async function refresh() {
     } catch (error) { $("connection").textContent = "Disconnected"; }
     finally { setTimeout(refresh, 1500); }
 }
+</script>
+<script src="/assets/floorplan.js"></script>
+<script>
 Promise.all([api("/api/catalog"),api("/api/project")]).then(([catalog,data]) => {
     catalogue = catalog; project = data.draft; redrawForms();
 }).catch(error => message(error.message,true));

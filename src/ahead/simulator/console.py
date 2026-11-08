@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Event, Lock, Thread
 from urllib.parse import urlsplit
 
+from ahead.simulator.floorplan import WALL_TYPES
 from ahead.simulator.presets import PRESETS
 from ahead.simulator.project import SETTINGS, compile_project, prepare_project, validate_draft
 
@@ -109,7 +110,12 @@ class Console:
 
 
 def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
-    index = files(__package__).joinpath("console.html").read_bytes()
+    resources = files(__package__)
+    assets = {
+        "/": (resources.joinpath("console.html").read_bytes(), "text/html; charset=utf-8"),
+        "/assets/console.css": (resources.joinpath("console.css").read_bytes(), "text/css; charset=utf-8"),
+        "/assets/floorplan.js": (resources.joinpath("floorplan.js").read_bytes(), "text/javascript; charset=utf-8"),
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
@@ -138,9 +144,12 @@ def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
         def do_GET(self):
             if not self.local_request():
                 return
-            match urlsplit(self.path).path:
-                case "/":
-                    self.send(index, mime="text/html; charset=utf-8")
+            path = urlsplit(self.path).path
+            if path in assets:
+                payload, mime = assets[path]
+                self.send(payload, mime=mime)
+                return
+            match path:
                 case "/api/live":
                     with console.lock:
                         snapshot = console.snapshot
@@ -151,7 +160,8 @@ def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
                                 "initial_state": console.initial_state}
                     self.send(data)
                 case "/api/catalog":
-                    self.send({"presets": PRESETS, "settings": SETTINGS, "example": console.example})
+                    self.send({"presets": PRESETS, "settings": SETTINGS, "example": console.example,
+                               "wall_types": list(WALL_TYPES)})
                 case _:
                     self.send({"error": "Unknown endpoint"}, 404)
 

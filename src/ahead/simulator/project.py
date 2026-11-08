@@ -8,6 +8,8 @@ from math import isfinite
 from re import fullmatch
 
 from ahead.control import HysteresisController
+from ahead.simulator.floorplan import compile_pipes, derive_envelope, pipe_paths, validate_plan
+from ahead.simulator.pipe_network import PipeNetwork
 from ahead.simulator.house import Conditions, House, OutdoorUnit, Partition, Source, Zone
 from ahead.simulator.hydronics import Emitter, HeatExchanger, WaterLoop
 from ahead.simulator.presets import PRESETS
@@ -81,8 +83,9 @@ def _reference(row, field, items):
 
 
 def validate_draft(project: dict) -> tuple[dict, dict]:
-    if not isinstance(project, dict) or project.keys() - {"settings", *PRESETS}:
+    if not isinstance(project, dict) or project.keys() - {"settings", "floorplan", *PRESETS}:
         raise ValueError("Project contains unknown sections")
+    validate_plan(project.get("floorplan", {}))
     return _values(project.get("settings", {}), SETTINGS, "settings"), _rows(project)
 
 
@@ -101,6 +104,8 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
     if settings["noise_c"] < 0 or not 0 <= settings["warmup_days"] <= 14:
         raise ValueError("Noise must be non-negative and warm-up between zero and 14 days")
 
+    plan = project.get("floorplan", {})
+    rectangles = derive_envelope(plan, rows)
     room_rows = rows["rooms"]
     surfaces = rows["surfaces"]
     layers = defaultdict(list)
@@ -258,8 +263,11 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
                             row["kw_k"], row["max_heat_kw"], row["pump_kw"])
         for name, row in rows["heat_exchangers"].items()
     }
+    pipes, nodes = compile_pipes(plan, rows, rectangles)
+    paths = pipe_paths(pipes, nodes, emitters, {source.name: source for source in sources})
+    pipe_network = PipeNetwork(pipes, paths) if pipes else None
     house = House(tuple(zones), tuple(partitions), tuple(sources), loops=loops, emitters=emitters,
-                  outdoor_units=outdoor_units, exchangers=exchangers)
+                  outdoor_units=outdoor_units, exchangers=exchangers, pipe_network=pipe_network)
 
     for row in rows["solar"].values():
         face = _reference(row, "surface", surfaces)
@@ -331,6 +339,8 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
     diagnostics = {
         "surfaces": surface_info, "solar": {}, "ground_c": settings["ground_c"],
         "configured_objects": rows,
+        "floorplan": plan,
+        "routed_emitters": sorted(paths),
     }
 
     def environment(elapsed, conditions):

@@ -510,5 +510,221 @@
       "start_s": 122400,
       "room": "study"
     }
-  ]
+  ],
+  "floorplan": {
+    "rooms": {
+      "living": {
+        "x": 0,
+        "y": 0,
+        "derive": false
+      },
+      "kitchen": {
+        "x": 5,
+        "y": 0,
+        "derive": false
+      },
+      "hall": {
+        "x": 5,
+        "y": 4,
+        "derive": false
+      },
+      "bedroom": {
+        "x": 0,
+        "y": 0,
+        "derive": false
+      },
+      "study": {
+        "x": 5,
+        "y": 0,
+        "derive": false
+      },
+      "attic": {
+        "x": 0,
+        "y": 4,
+        "derive": false
+      }
+    },
+    "nodes": {
+      "boiler_port": {
+        "x": 8.25,
+        "y": 6.5,
+        "level": "ground",
+        "height_mm": 150,
+        "kind": "sources",
+        "equipment": "gas_boiler"
+      },
+      "hall_corner": {
+        "x": 8.25,
+        "y": 3.5,
+        "level": "ground",
+        "height_mm": 150,
+        "kind": "junction"
+      },
+      "kitchen_branch": {
+        "x": 5.25,
+        "y": 3.5,
+        "level": "ground",
+        "height_mm": 150,
+        "kind": "junction"
+      },
+      "kitchen_radiator": {
+        "x": 5.25,
+        "y": 1,
+        "level": "ground",
+        "height_mm": 150,
+        "kind": "emitters",
+        "equipment": "kitchen"
+      },
+      "living_radiator": {
+        "x": 1,
+        "y": 3.5,
+        "level": "ground",
+        "height_mm": 150,
+        "kind": "emitters",
+        "equipment": "living"
+      },
+      "living_split": {
+        "x": 2,
+        "y": 0.5,
+        "level": "ground",
+        "height_mm": 150,
+        "kind": "sources",
+        "equipment": "living_room_heat_pump"
+      },
+      "bedroom_split": {
+        "x": 2,
+        "y": 0.5,
+        "level": "upper",
+        "height_mm": 150,
+        "kind": "sources",
+        "equipment": "bedroom_indoor"
+      },
+      "bedroom_radiator": {
+        "x": 1,
+        "y": 3.5,
+        "level": "upper",
+        "height_mm": 150,
+        "kind": "emitters",
+        "equipment": "bedroom"
+      },
+      "study_radiator": {
+        "x": 6,
+        "y": 3.5,
+        "level": "upper",
+        "height_mm": 150,
+        "kind": "emitters",
+        "equipment": "study"
+      }
+    },
+    "pipes": {
+      "boiler_run_supply": {
+        "first": "boiler_port",
+        "last": "hall_corner",
+        "circuit": "radiators",
+        "run": "supply",
+        "room": "hall",
+        "mounting": "free_running",
+        "wall": ""
+      },
+      "boiler_run_return": {
+        "first": "boiler_port",
+        "last": "hall_corner",
+        "circuit": "radiators",
+        "run": "return",
+        "room": "hall",
+        "mounting": "free_running",
+        "wall": ""
+      },
+      "kitchen_main_supply": {
+        "first": "hall_corner",
+        "last": "kitchen_branch",
+        "circuit": "radiators",
+        "run": "supply",
+        "room": "kitchen",
+        "mounting": "free_running",
+        "wall": ""
+      },
+      "kitchen_main_return": {
+        "first": "hall_corner",
+        "last": "kitchen_branch",
+        "circuit": "radiators",
+        "run": "return",
+        "room": "kitchen",
+        "mounting": "free_running",
+        "wall": ""
+      },
+      "kitchen_radiator_run_supply": {
+        "first": "kitchen_branch",
+        "last": "kitchen_radiator",
+        "circuit": "radiators",
+        "run": "supply",
+        "room": "kitchen",
+        "mounting": "on_wall",
+        "wall": "west"
+      },
+      "kitchen_radiator_run_return": {
+        "first": "kitchen_branch",
+        "last": "kitchen_radiator",
+        "circuit": "radiators",
+        "run": "return",
+        "room": "kitchen",
+        "mounting": "on_wall",
+        "wall": "west"
+      },
+      "living_radiator_run_supply": {
+        "first": "kitchen_branch",
+        "last": "living_radiator",
+        "circuit": "radiators",
+        "run": "supply",
+        "room": "living",
+        "mounting": "free_running",
+        "wall": ""
+      },
+      "living_radiator_run_return": {
+        "first": "kitchen_branch",
+        "last": "living_radiator",
+        "circuit": "radiators",
+        "run": "return",
+        "room": "living",
+        "mounting": "free_running",
+        "wall": ""
+      },
+      "bedroom_riser_supply": {
+        "first": "living_radiator",
+        "last": "bedroom_radiator",
+        "circuit": "radiators",
+        "run": "supply",
+        "room": "",
+        "mounting": "free_running",
+        "wall": ""
+      },
+      "bedroom_riser_return": {
+        "first": "living_radiator",
+        "last": "bedroom_radiator",
+        "circuit": "radiators",
+        "run": "return",
+        "room": "",
+        "mounting": "free_running",
+        "wall": ""
+      },
+      "upper_branch_supply": {
+        "first": "bedroom_radiator",
+        "last": "study_radiator",
+        "circuit": "radiators",
+        "run": "supply",
+        "room": "study",
+        "mounting": "free_running",
+        "wall": ""
+      },
+      "upper_branch_return": {
+        "first": "bedroom_radiator",
+        "last": "study_radiator",
+        "circuit": "radiators",
+        "run": "return",
+        "room": "study",
+        "mounting": "free_running",
+        "wall": ""
+      }
+    }
+  }
 }

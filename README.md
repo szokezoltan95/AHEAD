@@ -4,7 +4,7 @@
 
 AHEAD is an early-stage research project on self-adaptive control of building heating. It will investigate whether a controller can learn how an unfamiliar building heats up and cools down from routine measurements, then use that model to coordinate its heating equipment while maintaining comfort and respecting equipment limits.
 
-> **Project status:** The Compose test bench runs a real-time whole-house simulator that Home Assistant can control via MQTT. It includes a browser-based house editor and live schematic. The adaptive AHEAD controller and its HAOS integration are planned.
+> **Project status:** The Compose test bench runs a real-time whole-house simulator that Home Assistant can control via MQTT. It includes a browser-based floor-plan editor and live schematic. The adaptive AHEAD controller and its HAOS integration are planned.
 
 ## Research scope
 
@@ -50,9 +50,13 @@ Set `AHEAD_SCENARIO` in a Compose `.env` file to mount a different TOML scenario
 
 Open the [AHEAD simulator console](http://localhost:8765). Compose publishes the console on loopback. Set `AHEAD_CONSOLE_PORT` in `.env` to use a different host port.
 
-- **Live** shows a schematic, each component's live readings and recent trends, and the underlying JSON at `/api/live`. Room air and fabric temperatures, valve positions and flow, water and slab temperatures, requested and actual heat output, sensor faults, and the heat and electrical balances are visible independently of MQTT.
-- **Configure** opens with an editable six-room example. Add objects from the preset lists, use the dropdowns to connect them, and **Save draft** or **Apply and restart simulation**. Applying validates links, optionally warms up the house, stores the starting thermal checkpoint, and begins a new live run. You can import and export project JSON. After applying, use the refreshed virtual devices in Home Assistant. A reversible split indoor unit uses positive percentages for heat and negative percentages for cooling. Its optional setpoint and fan controls apply when set.
+- **Live** shows the floor plan and system schematic, each component's live readings and recent trends, and the underlying JSON at `/api/live`. Room air and fabric temperatures, valve positions and flow, water and slab temperatures, requested and actual heat output, sensor faults, and the heat and electrical balances are visible independently of MQTT.
+- **Configure** opens with an editable six-room example. Draw rooms on the floor plan, click wall edges to set construction and openings, and place radiators and other equipment. Use **Advanced configuration** for detailed parameters. Choose **Save draft** or **Apply and restart simulation**. Applying validates links, optionally warms up the house, stores the starting thermal checkpoint, and begins a new live run. You can import and export project JSON. After applying, use the refreshed virtual devices in Home Assistant. A reversible split indoor unit uses positive percentages for heat and negative percentages for cooling. Its optional setpoint and fan controls apply when set.
 - **Replay** uses the same saved project, starting checkpoint, and seeded sensor noise. Applying a project or restarting the simulator starts its scenario clock from zero. Home Assistant commands are live inputs, so repeating an experiment also requires repeating the controller inputs.
+
+To route radiators, place a boiler or circuit connection and a radiator. Select **Draw pipe**, choose the circuit and **Supply + return**, and click the connection points in order. Use **Add junction** to branch from a run. Switching floors before choosing the next point draws a riser. In **Select / move**, click a segment to set its mounting, reference wall, centreline offset or depth, and endpoint heights above each floor. Shift-click to select several segments. Live pipe readings include length, flow, inlet and outlet temperatures, and heat exchanged with the surroundings.
+
+Rooms drawn from scratch generate wall areas and shared surfaces. Existing rooms can be placed visually while keeping their manually configured construction. The editor accepts a rectangular plan for each room. A radiator uses drawn pipe heat losses when it has both a supply and return route to a source or circuit connection. The model still distributes water using the configured branch flows and circuit limit.
 
 | Area | Configurable model |
 | --- | --- |
