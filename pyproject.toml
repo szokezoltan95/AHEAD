@@ -20,4 +20,4 @@ ahead-live = "ahead.simulator.live:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"ahead.simulator" = ["console.html", "console.css", "floorplan.js", "example.json"]
+"ahead.simulator" = ["console.html", "console.css", "floorplan.js", "live-view.js", "system-views.js", "example.json"]

@@ -92,6 +92,7 @@ class Conditions:
     solar_by_zone_kw: Mapping[str, float] = field(default_factory=dict)
     ventilation_kw_k: Mapping[str, float] = field(default_factory=dict)
     door_exchange_kw_k: Mapping[tuple[str, str], float] = field(default_factory=dict)
+    radiant_opening_m2: Mapping[tuple[str, str], float] = field(default_factory=dict)
     solar_water_kw: Mapping[str, float] = field(default_factory=dict)
     solar_thermal: Mapping[str, tuple[str, float, float]] = field(default_factory=dict)
     solar_pv_kw: float = 0
@@ -154,6 +155,7 @@ class House:
         self.exchangers = dict(exchangers or {})
         self._exchanger_details = {}
         self._room_flux = {}
+        self._heat_links = []
         self._source_details = {}
         self._outdoor_details = {}
         self._balance = {}
@@ -326,6 +328,7 @@ class House:
             "outdoor_units": self._outdoor_details,
             "heat_exchangers": self._exchanger_details,
             "balance": self._balance,
+            "heat_links": self._heat_links,
         }
 
     @property
@@ -346,7 +349,8 @@ class House:
         _check((duration_s,), positive=True)
         _check((conditions.solar_kw_m2, conditions.occupied_gains_kw, conditions.appliance_kw,
                 conditions.solar_pv_kw, *conditions.ventilation_kw_k.values(),
-                *conditions.door_exchange_kw_k.values(), *conditions.dhw_draw_l_min.values()))
+                *conditions.door_exchange_kw_k.values(), *conditions.radiant_opening_m2.values(),
+                *conditions.dhw_draw_l_min.values()))
         if not all(map(isfinite, (conditions.outdoor_c, conditions.electricity_price_kwh,
                                   conditions.gas_price_kwh))):
             raise ValueError("Weather and tariffs must be finite")
@@ -379,6 +383,13 @@ class House:
         max_rate = self._max_rate + max(
             dynamic_rate[name] / zone.air_capacity for name, zone in self.zones.items()
         )
+        radiant_rates = dict.fromkeys(self.zones, 0.0)
+        for (first, second), area in conditions.radiant_opening_m2.items():
+            maximum_k = max(1, self._fabric[first]+273.15, self._fabric[second]+273.15)
+            conductance = 4 * 5.670374419e-11 * area * maximum_k**3
+            radiant_rates[first] += conductance / self.zones[first].fabric_capacity
+            radiant_rates[second] += conductance / self.zones[second].fabric_capacity
+        max_rate += max(radiant_rates.values(), default=0)
         max_rate += max((
             rate * WATER_KW_PER_K_PER_L_MIN / self.hydronics.loops[name].capacity
             for name, rate in conditions.dhw_draw_l_min.items()
@@ -427,14 +438,29 @@ class House:
                 "pipe_to_air_kw": pipe_air, "pipe_to_fabric_kw": pipe_fabric,
             }
 
-        transfers = [(link.first, link.second, link.kw_k) for link in self._partitions]
-        transfers.extend((a, b, value) for (a, b), value in conditions.door_exchange_kw_k.items())
-        for first, second, conductance in transfers:
-            flow = (self._air[second] - self._air[first]) * conductance
-            air_flow[first] += flow
-            air_flow[second] -= flow
-            self._room_flux[first]["neighbours_kw"] += flow
-            self._room_flux[second]["neighbours_kw"] -= flow
+        heat_links = []
+
+        def transfer(first, second, mechanism, power):
+            # Positive power transfers energy from the first room to the second.
+            node = fabric_flow if mechanism == "radiation" else air_flow
+            node[first] -= power
+            node[second] += power
+            field = "radiation_kw" if mechanism == "radiation" else "neighbours_kw"
+            for room, amount in ((first, -power), (second, power)):
+                self._room_flux[room][field] = self._room_flux[room].get(field, 0) + amount
+            heat_links.append({"first": first, "second": second, "kind": mechanism, "kw": power})
+
+        for link in self._partitions:
+            transfer(link.first, link.second, "conduction",
+                     (self._air[link.first] - self._air[link.second]) * link.kw_k)
+        for (first, second), conductance in conditions.door_exchange_kw_k.items():
+            transfer(first, second, "airflow", (self._air[first] - self._air[second]) * conductance)
+        for (first, second), area in conditions.radiant_opening_m2.items():
+            first_k = max(0, self._fabric[first] + 273.15)
+            second_k = max(0, self._fabric[second] + 273.15)
+            power = 5.670374419e-11 * area * (first_k**4 - second_k**4)
+            transfer(first, second, "radiation", power)
+        self._heat_links = heat_links
 
         for name, loop in self.hydronics.loops.items():
             temperature = self.hydronics.water[name]

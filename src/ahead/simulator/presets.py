@@ -97,7 +97,8 @@ PRESETS = {
     "events": {
         "window_open": {"start_s": 3600, "duration_s": 600, "room": "", "extra_ach": 2.0},
         "extractor_on": {"start_s": 3600, "duration_s": 600, "room": "", "extra_ach": 1.5},
-        "door_open": {"start_s": 3600, "duration_s": 1800, "room": "", "adjacent_room": "", "kw_k": 0.2},
+        "door_open": {"start_s": 3600, "duration_s": 1800, "room": "", "adjacent_room": "", "kw_k": 0.2,
+                      "radiant_area_m2": 0.0, "radiant_exchange_factor": 0.7},
         "hot_water_draw": {"start_s": 3600, "duration_s": 420, "circuit": "", "flow_l_min": 7.0},
         "room_sensor_dropout": {"start_s": 3600, "duration_s": 1800, "room": ""},
         "outdoor_sensor_bias": {"start_s": 3600, "duration_s": 1800, "bias_c": 2.0},

@@ -502,13 +502,23 @@
       "preset": "door_open",
       "start_s": 32400,
       "room": "kitchen",
-      "adjacent_room": "hall"
+      "adjacent_room": "hall",
+      "radiant_area_m2": 1.5
     },
     {
       "id": "study_sensor",
       "preset": "room_sensor_dropout",
       "start_s": 122400,
       "room": "study"
+    },
+    {
+      "id": "initial_open_door",
+      "preset": "door_open",
+      "start_s": 0,
+      "duration_s": 1800,
+      "room": "living",
+      "adjacent_room": "kitchen",
+      "radiant_area_m2": 1.4
     }
   ],
   "floorplan": {

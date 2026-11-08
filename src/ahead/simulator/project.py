@@ -313,6 +313,9 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
         if event in ("window_open", "extractor_on"):
             _positive(row["extra_ach"])
         if event == "door_open":
+            if row["radiant_area_m2"] < 0:
+                raise ValueError("Door radiant area must be non-negative")
+            _fraction(row["radiant_exchange_factor"])
             _reference(row, "adjacent_room", room_rows)
             _positive(row["kw_k"])
             if row["room"] == row["adjacent_room"]:
@@ -387,6 +390,7 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
 
         ventilation = defaultdict(float)
         doors = defaultdict(float)
+        radiation = defaultdict(float)
         draws = defaultdict(float)
         for beginning, ending, event in events:
             if not beginning <= elapsed < ending:
@@ -396,7 +400,10 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
                 room = event["room"]
                 ventilation[room] += volume[room] * event["extra_ach"] * 1.2 * 1.005 / 3600
             elif kind == "door_open":
-                doors[tuple(sorted((event["room"], event["adjacent_room"])))] += event["kw_k"]
+                pair = tuple(sorted((event["room"], event["adjacent_room"])))
+                doors[pair] += event["kw_k"]
+                if event["radiant_area_m2"]:
+                    radiation[pair] += event["radiant_area_m2"] * event["radiant_exchange_factor"]
             else:
                 draws[event["circuit"]] += event["flow_l_min"]
         diagnostics["sun"] = {"east": sun[0], "north": sun[1], "up": sun[2]}
@@ -406,7 +413,8 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
             "hot_water_draw_l_min": dict(draws),
         }
         return replace(conditions, solar_by_zone_kw=sunlight, solar_thermal=collectors, solar_pv_kw=pv,
-                       ventilation_kw_k=ventilation, door_exchange_kw_k=doors, dhw_draw_l_min=draws)
+                       ventilation_kw_k=ventilation, door_exchange_kw_k=doors,
+                       radiant_opening_m2=radiation, dhw_draw_l_min=draws)
 
     scenario = Scenario(house, profile, step, duration, period or None, tuple(faults),
                         settings["noise_c"], settings["seed"], environment)

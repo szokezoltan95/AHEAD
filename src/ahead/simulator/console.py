@@ -115,6 +115,8 @@ def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
         "/": (resources.joinpath("console.html").read_bytes(), "text/html; charset=utf-8"),
         "/assets/console.css": (resources.joinpath("console.css").read_bytes(), "text/css; charset=utf-8"),
         "/assets/floorplan.js": (resources.joinpath("floorplan.js").read_bytes(), "text/javascript; charset=utf-8"),
+        "/assets/live-view.js": (resources.joinpath("live-view.js").read_bytes(), "text/javascript; charset=utf-8"),
+        "/assets/system-views.js": (resources.joinpath("system-views.js").read_bytes(), "text/javascript; charset=utf-8"),
     }
 
     class Handler(BaseHTTPRequestHandler):

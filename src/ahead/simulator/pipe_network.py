@@ -39,7 +39,7 @@ class PipeFrame:
         self.fabric_heat = defaultdict(float)
         self.loss_kw = 0.0
 
-    def _transfer(self, pipe_id, flow, inlet, water_rate):
+    def _transfer(self, pipe_id, flow, inlet, water_rate, first, last):
         pipe = self.pipes[pipe_id]
         loss = flow * water_rate * -expm1(-pipe.kw_k / (flow * water_rate)) * (
             inlet - self.ambient[pipe_id]
@@ -51,6 +51,7 @@ class PipeFrame:
             target[pipe.room] += loss
         self.details[pipe_id].update(
             flow_l_min=flow, inlet_c=inlet, outlet_c=outlet, heat_loss_kw=loss,
+            flow_from=first, flow_to=last,
         )
         return outlet
 
@@ -64,7 +65,7 @@ class PipeFrame:
                 steps[pipe] = depth, first, last
         for pipe, (_, first, last) in sorted(steps.items(), key=lambda item: item[1][0]):
             if demand[pipe]:
-                at_node[last] = self._transfer(pipe, demand[pipe], at_node.get(first, temperature), water_rate)
+                at_node[last] = self._transfer(pipe, demand[pipe], at_node.get(first, temperature), water_rate, first, last)
         return {
             name: at_node.get(route["supply"][-1][2], temperature) for name, route in self.paths.items()
         }
@@ -83,6 +84,6 @@ class PipeFrame:
                 steps[pipe] = depth, first, last
         for pipe, (_, first, last) in sorted(steps.items(), key=lambda item: -item[1][0]):
             if flow[last]:
-                outlet = self._transfer(pipe, flow[last], energy[last] / flow[last], water_rate)
+                outlet = self._transfer(pipe, flow[last], energy[last] / flow[last], water_rate, last, first)
                 energy[first] += outlet * flow[last]
                 flow[first] += flow[last]

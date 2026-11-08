@@ -18,7 +18,11 @@ const iconPaths = {
     boiler:"M6 3h12v17H6z M9 16h6 M12 7c0 2-3 2-3 4a3 3 0 0 0 6 0c0-1-1-3-3-4z",
     fan:"M12 12c-7-5-4-10-1-8 2 1 2 4 1 8z M12 12c8-3 11 2 8 4-2 1-5-1-8-4z M12 12c-1 8-6 10-7 6-1-2 2-4 7-6z",
     sun:"M12 2v3 M12 19v3 M2 12h3 M19 12h3 M5 5l2 2 M17 17l2 2 M19 5l-2 2 M7 17l-2 2 M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0z",
-    window:"M4 4h16v16H4z M12 4v16 M4 12h16"
+    window:"M4 4h16v16H4z M12 4v16 M4 12h16",
+    thermometer:"M10 14.5V5a2 2 0 0 1 4 0v9.5a4 4 0 1 1-4 0z M12 8v10",
+    power:"m13 2-8 12h6l-1 8 9-12h-7z",
+    tank:"M6 7a6 3 0 0 1 12 0v10a6 3 0 0 1-12 0z M6 7a6 3 0 0 0 12 0 M12 4V2 M12 20v2",
+    exchange:"M4 7h15m-4-4 4 4-4 4 M20 17H5m4-4-4 4 4 4"
 };
 const sectionIcons = {
     levels:"layers",rooms:"room",surfaces:"plan",windows:"window",circuits:"pipe",emitters:"radiator",
@@ -35,7 +39,7 @@ const PLAN_SCALE = 48;
 const sides = ["north","east","south","west"];
 const initialBox = [-48,-48,760,500];
 let planBox = initialBox.slice(), activeTool = "select", routePoint = "", drag = null;
-let fitted = false, planFloor = "", liveFloor = "", liveState, liveViewKey = "";
+let fitted = false, planFloor = "";
 let selectedPipes = new Set();
 
 function planData() {
@@ -163,8 +167,8 @@ function textAt(x,y,text,className) {
     node.textContent = text;
     return node;
 }
-function paint(canvas,plan,rooms,floor,box,state=null) {
-    const drawing = !state;
+function paint(canvas,plan,rooms,floor,box,liveSources=null) {
+    const drawing = !liveSources;
     canvas.setAttribute("viewBox",box.join(" "));
     canvas.replaceChildren();
     const defs = svg("defs"), gridId = canvas.id+"-grid";
@@ -180,14 +184,14 @@ function paint(canvas,plan,rooms,floor,box,state=null) {
             width:room.length_m*PLAN_SCALE,height:room.width_m*PLAN_SCALE,
             rx:2,class:`plan-room ${room.preset === "unheated" ? "unheated" : ""} ${location.derive ? "" : "legacy"}`,
             "data-room":name});
-        if (!drawing) {
-            area.style.cursor = "pointer";
-            area.onclick = () => selectLive("rooms",name);
+        const label = textAt(position.x+.16,position.y+.36,human(name),"plan-label");
+        const reading = textAt(position.x+.16,position.y+.73,
+            `${format(room.length_m)} × ${format(room.width_m)} m`,"plan-meta");
+        if (drawing) canvas.append(area,label,reading);
+        else {
+            reading.setAttribute("class","live-room-temperature");
+            canvas.append(livePlanItem("rooms",name,"live-room-item",area,label,reading));
         }
-        canvas.append(area,textAt(position.x+.16,position.y+.4,human(name),"plan-label"),
-            textAt(position.x+.16,position.y+.72,state?.rooms?.[name] ?
-                `${format(state.rooms[name].air_c)} °C` :
-                `${format(room.length_m)} × ${format(room.width_m)} m`,"plan-meta"));
         for (const side of sides) {
             const [first,last] = wallLine(position,room,side);
             if (drawing && activeTool === "wall") {
@@ -210,17 +214,21 @@ function paint(canvas,plan,rooms,floor,box,state=null) {
         const visibleFirst = riser ? {...base,x:base.x+(pipe.run === "supply" ? -.11 : .11)} : base;
         const visibleLast = riser ? {...visibleFirst,x:visibleFirst.x+.26,y:visibleFirst.y+.26} : last;
         const target = line(visibleFirst,visibleLast,{class:"pipe-target","data-pipe":name});
-        if (!drawing) target.onclick = () => selectLive("pipes",name);
         const path = line(visibleFirst,visibleLast,{class:`plan-pipe ${pipe.run} ${riser ? "riser" : ""}`,
             "pointer-events":"none"});
         if (drawing && selectedPipes.has(name)) path.style.strokeWidth = "6";
-        const info = state?.pipes?.[name];
-        target.append(svg("title"));
-        target.firstChild.textContent = info ? `${name} · ${format(info.flow_l_min)} L/min · ${format(info.heat_loss_kw)} kW` : name;
-        canvas.append(path,target);
+        if (drawing) {
+            target.append(svg("title"));
+            target.firstChild.textContent = name;
+            canvas.append(path,target);
+        } else {
+            const label = textAt((visibleFirst.x+visibleLast.x)/2,(visibleFirst.y+visibleLast.y)/2-.08,"","live-pipe-label");
+            label.setAttribute("text-anchor","middle");
+            canvas.append(livePlanItem("pipes",name,"live-pipe-item",path,target,label));
+        }
     }
     for (const [name,node] of Object.entries(plan.nodes || {})) {
-        if (node.level !== floor || (!drawing && node.kind === "junction")) continue;
+        if (node.level !== floor) continue;
         if (node.kind === "junction") {
             canvas.append(svg("circle",{cx:node.x*PLAN_SCALE,cy:node.y*PLAN_SCALE,r:routePoint === name ? 5 : 3,
                 class:`plan-point ${routePoint === name ? "active" : ""}`,"data-node":name}));
@@ -228,14 +236,16 @@ function paint(canvas,plan,rooms,floor,box,state=null) {
             const x=node.x*PLAN_SCALE, y=node.y*PLAN_SCALE;
             const equipment = svg("rect",{x:x-9,y:y-9,width:18,height:18,rx:4,
                 class:"plan-equipment","data-node":name});
-            if (!drawing) equipment.onclick = () => selectLive(node.kind,node.equipment);
-            const sourcePreset = drawing ? find("sources",node.equipment)?.preset :
-                state.configured_objects?.sources?.[node.equipment]?.preset;
+            const sourcePreset = drawing ? find("sources",node.equipment)?.preset : liveSources[node.equipment]?.preset;
             const symbol = icon(node.kind === "sources" && sourcePreset?.includes("split") ? "fan" :
-                {emitters:"radiator",sources:"boiler",circuits:"pipe"}[node.kind]);
+                {emitters:"radiator",sources:"boiler",circuits:"tank"}[node.kind]);
             for (const [key,value] of Object.entries({x:x-7,y:y-7,width:14,height:14,class:"icon plan-device-icon"})) symbol.setAttribute(key,value);
             const label = textAt(node.x+.24,node.y-.21,human(node.equipment),"plan-meta");
-            canvas.append(equipment,symbol,label);
+            if (drawing) canvas.append(equipment,symbol,label);
+            else {
+                const reading = textAt(node.x+.24,node.y+.12,"","live-device-reading");
+                canvas.append(livePlanItem(node.kind,node.equipment,"live-device-item",equipment,symbol,label,reading));
+            }
         }
     }
     if (drawing && drag?.preview) {
@@ -254,25 +264,6 @@ function drawPlan() {
         [drag.node]:{...plan.nodes[drag.node],...drag.position}}} : plan;
     paint(canvas,preview,roomMap(project),planFloor,planBox);
 }
-function selectLive(group,name) {
-    selected = `${group}/${name}`; trendPath = "";
-    render(liveState);
-    $("reading-title").scrollIntoView({block:"nearest"});
-}
-function drawLivePlan(state) {
-    liveState = state;
-    const plan = state.floorplan;
-    const rooms = state.configured_objects?.rooms || {};
-    const floors = [...new Set(Object.keys(plan?.rooms || {}).map(name => rooms[name]?.level).filter(Boolean))];
-    $("live-plan").hidden = !floors.length;
-    if (!floors.length) return;
-    if (!floors.includes(liveFloor)) liveFloor = floors[0];
-    const key = JSON.stringify([floors,liveFloor]);
-    if (key !== liveViewKey) { liveViewKey=key; optionList($("live-level"),floors,liveFloor); }
-    paint($("live-svg"),plan,rooms,liveFloor,fitBox(plan,rooms,liveFloor),state);
-}
-$("live-level").onchange = () => { liveFloor = $("live-level").value; drawLivePlan(liveState); };
-
 function dialog(title,fields,save,other=[]) {
     const form = $("plan-form");
     $("plan-dialog-title").textContent = title;

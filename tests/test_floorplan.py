@@ -46,6 +46,8 @@ class FloorplanTests(unittest.TestCase):
                                2 * pipes["bedroom_riser_supply"]["flow_l_min"])
         self.assertGreater(pipes["living_radiator_run_supply"]["heat_loss_kw"], 0)
         self.assertGreater(pipes["bedroom_riser_return"]["flow_l_min"], 0)
+        self.assertEqual(pipes["bedroom_riser_supply"]["flow_from"], "living_radiator")
+        self.assertEqual(pipes["bedroom_riser_return"]["flow_from"], "bedroom_radiator")
         self.assertTrue(math.isfinite(house.return_c))
 
     def test_wall_depth_and_endpoint_height_change_geometry(self):
