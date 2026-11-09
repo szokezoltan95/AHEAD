@@ -501,11 +501,11 @@ def run_live(scenario: Scenario, host: str, port: int, house_id: str,
                 console and console.changed.is_set()
             ):
                 break
-            if sample.end_s == 1 or sample.end_s % publish_interval == 0:
-                if console:
-                    console.record(scenario, sample, diagnostic)
-                if bridge.connected.is_set():
-                    bridge.publish_state(client, sample)
+            publish_due = sample.end_s == 1 or sample.end_s % publish_interval == 0
+            if console and (publish_due or console.logger.due(sample.end_s)):
+                console.record(scenario, sample, diagnostic)
+            if publish_due and bridge.connected.is_set():
+                bridge.publish_state(client, sample)
     finally:
         if console:
             console.bind_remote({}, None)

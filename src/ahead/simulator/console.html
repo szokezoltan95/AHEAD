@@ -13,6 +13,14 @@
 <main id="live">
 <div class="live-heading">
     <div><p class="live-kicker">SIMULATION MONITOR</p><h2>Live house</h2><p id="run-info" class="muted"></p></div>
+    <div class="logger-controls panel">
+        <strong>Detailed data log</strong>
+        <label>Capture interval <select id="logger-interval"><option value="1">1 second</option><option value="2">2 seconds</option><option value="5" selected>5 seconds</option><option value="10">10 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option></select></label>
+        <button id="logger-start" class="primary">Start logging</button>
+        <button id="logger-stop" hidden>Stop</button>
+        <a id="logger-download" href="/api/logger/download" hidden>Download .jsonl.gz</a>
+        <small id="logger-status" role="status">Not recording</small>
+    </div>
     <a class="live-api" href="/api/live" target="_blank" rel="noopener">Live JSON ↗</a>
 </div>
 <div class="live-metrics" id="live-metrics" aria-label="House readings"></div>
@@ -162,6 +170,33 @@ async function api(path, project) {
     if (!response.ok) throw Error(body.error || "Request failed");
     return body;
 }
+
+async function refreshLogger() {
+    try {
+        const status = await api("/api/logger");
+        $("logger-start").hidden = status.active;
+        $("logger-stop").hidden = !status.active;
+        $("logger-download").hidden = !status.ready;
+        $("logger-interval").disabled = status.active;
+        $("logger-status").textContent = status.error ? `Log error: ${status.error}` :
+            status.active ? `Recording every ${status.interval_s}s · ${status.samples} samples` :
+            status.ready ? `${status.samples} samples ready · ${status.file}` : "Not recording";
+    } catch (error) { $("logger-status").textContent = error.message; }
+}
+$("logger-start").onclick = async () => {
+    $("logger-start").disabled = true;
+    try { await api("/api/logger/start", {interval_s:Number($("logger-interval").value)}); }
+    catch (error) { $("logger-status").textContent = error.message; }
+    finally { $("logger-start").disabled = false; refreshLogger(); }
+};
+$("logger-stop").onclick = async () => {
+    $("logger-stop").disabled = true;
+    try { await api("/api/logger/stop", {}); }
+    catch (error) { $("logger-status").textContent = error.message; }
+    finally { $("logger-stop").disabled = false; refreshLogger(); }
+};
+setInterval(refreshLogger, 2500);
+refreshLogger();
 
 function showPage(page) {
     for (const name of ["live","configure","history"]) $(name).hidden = page !== name;
