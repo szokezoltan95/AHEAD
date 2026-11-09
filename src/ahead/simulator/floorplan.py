@@ -10,14 +10,32 @@ from ahead.simulator.presets import PRESETS
 
 WALL_TYPES = {
     "insulated_brick": (("brick", 0.25), ("eps", 0.15)),
-    "insulated_masonry_350": (("brick", 0.35), ("eps", 0.15)),
-    "insulated_masonry_300": (("brick", 0.30), ("eps", 0.15)),
+    "insulated_masonry_350": (("finish_coat", 0.002), ("adhesive", 0.003), ("certificate_eps", 0.15),
+                              ("adhesive", 0.003), ("lime_plaster", 0.015),
+                              ("solid_masonry", 0.30), ("lime_plaster", 0.015)),
+    "insulated_masonry_300": (("finish_coat", 0.002), ("adhesive", 0.003), ("certificate_eps", 0.15),
+                              ("adhesive", 0.003), ("lime_plaster", 0.015),
+                              ("solid_masonry", 0.30), ("lime_plaster", 0.015)),
     "insulated_concrete_footing": (("concrete", 0.45), ("xps", 0.10)),
     "solid_brick": (("brick", 0.25),),
     "insulated_block": (("block", 0.25), ("mineral_wool", 0.15)),
     "partition": (("brick", 0.12),),
-    "insulated_ceiling": (("gypsum", 0.02), ("mineral_wool", 0.30)),
+    "insulated_ceiling": (("rockwool", 0.20), ("perlite_concrete", 0.05),
+                          ("reinforced_concrete", 0.25), ("lime_plaster", 0.015)),
+    "insulated_ceiling_22": (("rockwool", 0.20), ("perlite_concrete", 0.05),
+                             ("reinforced_concrete", 0.22), ("lime_plaster", 0.015)),
     "insulated_floor": (("concrete", 0.15), ("xps", 0.10)),
+    "basement_ceiling": (("laminate", 0.01), ("adhesive", 0.003), ("floor_screed", 0.05),
+                         ("floor_insulation", 0.03), ("reinforced_concrete", 0.25),
+                         ("lime_plaster", 0.015)),
+    "masonry_unheated": (("lime_plaster", 0.015), ("solid_masonry", 0.30), ("lime_plaster", 0.015)),
+}
+
+CONSTRUCTION_U = {
+    "insulated_masonry_350": 0.262, "insulated_masonry_300": 0.262,
+    "insulated_concrete_footing": 0.29, "insulated_ceiling": 0.186,
+    "insulated_ceiling_22": 0.187, "basement_ceiling": 0.855,
+    "masonry_unheated": 0.810,
 }
 
 PLAN_SIDES = {"north": 0, "east": 90, "south": 180, "west": 270}
@@ -87,7 +105,10 @@ def _floorplan_rooms(plan, rows):
 def _surface(rows, name, preset, material, **values):
     if name in rows["surfaces"]:
         raise ValueError(f"Generated floor-plan surface conflicts with {name}")
-    rows["surfaces"][name] = PRESETS["surfaces"][preset] | values | {"preset": preset}
+    rows["surfaces"][name] = PRESETS["surfaces"][preset] | values | {
+        "u_override": (0.629 if material == "insulated_floor" and values.get("boundary") == "ground"
+                       else CONSTRUCTION_U.get(material, 0.0)), "preset": preset,
+    }
     for index, (layer, thickness) in enumerate(WALL_TYPES[material]):
         rows["layers"][f"{name}_{index}"] = PRESETS["layers"][layer] | {
             "preset": layer, "surface": name, "thickness_m": thickness,
@@ -157,7 +178,10 @@ def derive_envelope(plan, rows):
                     other_floor, other_ceiling = _vertical_extent(rows["rooms"][other], rows["levels"])
                     overlap = max(0, min(ceiling, other_ceiling) - max(floor, other_floor))
                     if overlap > TOLERANCE and not (other in derived and other < name):
-                        _surface(rows, surface, "wall", "partition", room=name, adjacent_room=other,
+                        unheated = (rows["rooms"][name]["preset"] == "unheated" or
+                                    rows["rooms"][other]["preset"] == "unheated")
+                        _surface(rows, surface, "wall", "masonry_unheated" if unheated else "partition",
+                                 room=name, adjacent_room=other,
                                  boundary="room", area_m2=width * overlap, azimuth_deg=azimuth)
                 outside = room_height - overlap
                 buried = min(burial, outside)
@@ -228,12 +252,18 @@ def _horizontal_surfaces(derived, rectangles, rows):
                     for row in rows["surfaces"].values()
                 )
                 if not reverse:
-                    _surface(rows, f"plan_{name}_{preset}_{other}", preset, "insulated_floor",
+                    construction = ("basement_ceiling" if preset == "floor" and
+                                    adjacent["preset"] == "unheated" else "insulated_floor")
+                    _surface(rows, f"plan_{name}_{preset}_{other}", preset, construction,
                              room=name, adjacent_room=other, boundary="room", area_m2=area)
             if uncovered > TOLERANCE:
                 boundary = "ground" if preset == "floor" and elevation <= TOLERANCE else "outdoors"
-                _surface(rows, f"plan_{name}_{preset}", preset,
-                         "insulated_floor" if preset == "floor" else "insulated_ceiling",
+                construction = ("insulated_floor" if preset == "floor" else
+                               layouts[name].get("ceiling_construction", "insulated_ceiling"))
+                if construction not in WALL_TYPES or (preset == "ceiling" and construction not in
+                                                       {"insulated_ceiling", "insulated_ceiling_22"}):
+                    raise ValueError(f"Unknown {preset} construction for {name}")
+                _surface(rows, f"plan_{name}_{preset}", preset, construction,
                          room=name, boundary=boundary, area_m2=uncovered)
 
 
@@ -253,6 +283,10 @@ class Pipe:
     insulation_mm: float
     offset_mm: float
     wall: str
+    wall_thickness_mm: float
+    material: str
+    water_volume_l: float
+    metal_mass_kg: float
 
 
 def compile_pipes(plan, rows, rectangles):
@@ -303,6 +337,12 @@ def compile_pipes(plan, rows, rectangles):
             raise ValueError(f"Pipe {name} references a wall on a different floor")
         offset = _number(item.get("offset_mm", 40), "Wall offset", 0, 1000)
         diameter = _number(item.get("diameter_mm", 18), "Pipe diameter", 4, 250)
+        wall_thickness = _number(item.get("wall_thickness_mm", 2.5), "Pipe wall thickness", 0.2, 15)
+        material = item.get("material", "steel")
+        if material not in {"steel", "copper", "pex", "ppr"}:
+            raise ValueError(f"Unknown pipe material for {name}")
+        if diameter <= 2 * wall_thickness:
+            raise ValueError(f"Pipe wall thickness must be less than half the outside diameter for {name}")
         insulation = _number(item.get("insulation_mm", 9), "Pipe insulation", 0, 200)
         override = _number(item.get("loss_w_mk", 0), "Pipe conductance", 0, 100)
         displacement = (-offset if mounting == "in_wall" else offset) / 1000
@@ -315,8 +355,14 @@ def compile_pipes(plan, rows, rectangles):
         outer = radius + insulation / 1000
         resistance = log(outer / radius) / (2 * pi * 0.04) + 1 / (2 * pi * outer * 8)
         coefficient = override or 1 / resistance
+        inner_radius = (diameter - 2 * wall_thickness) / 2000
+        outer_radius = diameter / 2000
+        water_volume_l = pi * inner_radius**2 * length * 1000
+        metal_density = {"steel": 7850, "copper": 8960, "pex": 950, "ppr": 900}[material]
+        metal_mass = pi * (outer_radius**2 - inner_radius**2) * length * metal_density
         pipes[name] = Pipe(name, circuit, run, first, last, length, coefficient * length / 1000,
-                           room, mounting, (a, b), diameter, insulation, offset, side)
+                           room, mounting, (a, b), diameter, insulation, offset, side,
+                           wall_thickness, material, water_volume_l, metal_mass)
     return pipes, nodes
 
 

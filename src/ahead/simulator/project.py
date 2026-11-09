@@ -117,7 +117,7 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
     for row in rows["windows"].values():
         surface = _reference(row, "surface", surfaces)
         _positive(row["area_m2"], row["u_w_m2k"])
-        _fraction(row["shade"], row["solar_transmittance"])
+        _fraction(row["shade"], row["solar_transmittance"], row["glazing_fraction"])
         windows[surface].append(row)
 
     volume = {}
@@ -223,15 +223,48 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
                                      slab_capacity, room_conductance, row["travel_s"], row["local_sensor_warming_c"],
                                      row["local_sensor_bias_c"], row["report_valve_opening"], row["fixed_open"])
         else:
-            _positive(row["rated_kw"], row["rated_delta_k"], row["width_m"], row["height_m"])
+            _positive(row["rated_kw"], row["rated_delta_k"], row["width_m"], row["height_m"],
+                      row["water_delta_k"], row["output_exponent"])
+            _positive(row["radiator_water_l"], row["radiator_metal_kg"],
+                      row["radiator_metal_cp_j_kgk"])
+            # Keep construction as a descriptive, user-defined label. The thermal
+            # model uses measured/rated output, water and metal mass, geometry,
+            # output exponent, and radiant fraction, so it can represent radiator
+            # families that are not built into the preset catalogue.
+            if not isinstance(row["construction"], str) or not row["construction"].strip():
+                raise ValueError(f"Radiator construction must be a non-empty label for {name}")
+            if (row["panel_count"] < 0 or row["convector_count"] < 0 or
+                    (row["construction"] == "panel" and not 1 <= row["panel_count"] <= 6) or
+                    row["convector_count"] > 6):
+                raise ValueError(f"Radiator panel and convector counts are out of range for {name}")
+            _fraction(row["radiant_fraction"])
             # Scale the generic rating from the preset's reference size.
             reference = PRESETS["emitters"][row["preset"]]
             reference_area = reference["width_m"] * reference["height_m"]
             output = row["rated_kw"] * row["width_m"] * row["height_m"] / reference_area
+            if row["construction"] == "panel" and row["panel_count"]:
+                panel_factor = ((0.65 + 0.175 * row["panel_count"]) *
+                                (0.72 + 0.14 * row["convector_count"]))
+                reference_factor = ((0.65 + 0.175 * reference["panel_count"]) *
+                                    (0.72 + 0.14 * reference["convector_count"]))
+                output *= panel_factor / reference_factor
+            mass_factor = (row["width_m"] * row["height_m"] / reference_area)
+            if row["construction"] == "panel" and row["panel_count"]:
+                mass_factor *= max(0.25, row["panel_count"] / max(1, reference["panel_count"]))
+            radiator_water_l = row["radiator_water_l"] * mass_factor
+            radiator_metal_kg = row["radiator_metal_kg"] * mass_factor
             emitters[name] = Emitter(room, circuit, output / row["rated_delta_k"], row["flow_l_min"],
                                      travel_s=row["travel_s"], local_sensor_warming_c=row["local_sensor_warming_c"],
                                      local_sensor_bias_c=row["local_sensor_bias_c"],
-                                     report_valve_opening=row["report_valve_opening"], fixed_open=row["fixed_open"])
+                                     report_valve_opening=row["report_valve_opening"], fixed_open=row["fixed_open"],
+                                     construction=row["construction"], panel_count=row["panel_count"],
+                                     convector_count=row["convector_count"], width_m=row["width_m"],
+                                     height_m=row["height_m"], rated_output_kw=output,
+                                     rated_delta_k=row["rated_delta_k"], water_delta_k=row["water_delta_k"],
+                                     output_exponent=row["output_exponent"],
+                                     radiant_fraction=row["radiant_fraction"], radiator_water_l=radiator_water_l,
+                                     radiator_metal_kg=radiator_metal_kg,
+                                     radiator_metal_cp_j_kgk=row["radiator_metal_cp_j_kgk"])
 
     outdoor_units = {}
     for name, row in rows["outdoor_units"].items():
@@ -282,6 +315,14 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
                 water_hysteresis_c=row.get("water_hysteresis_c", 0),
                 pump_start_c=row.get("pump_start_c", 35), pump_stop_c=row.get("pump_stop_c", 30),
                 pump_overrun_s=row.get("pump_overrun_s", 180), pump_kw=row.get("pump_kw", 0.06),
+                boiler_water_volume_l=row.get("boiler_water_volume_l", 0),
+                boiler_metal_mass_kg=row.get("boiler_metal_mass_kg", 0),
+                boiler_metal_cp_j_kgk=row.get("boiler_metal_cp_j_kgk", 500),
+                boiler_flow_l_min=row.get("boiler_flow_l_min", 0),
+                boiler_water_ua_kw_k=row.get("boiler_water_ua_kw_k", 0),
+                boiler_loss_kw_k=row.get("boiler_loss_kw_k", 0),
+                boiler_room_zone=_reference(row, "boiler_room_zone", room_rows)
+                if row.get("boiler_room_zone") else None,
                 water_setpoint_control=row.get("water_setpoint_control", False),
                 dhw_loop=row["dhw_circuit"] or None, report_heat=row["report_heat"],
                 automatic_heat_calls=row["automatic_heat_calls"],
@@ -293,7 +334,10 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
     }
     pipes, nodes = compile_pipes(plan, rows, rectangles)
     paths = pipe_paths(pipes, nodes, emitters, {source.name: source for source in sources})
-    pipe_network = PipeNetwork(pipes, paths) if pipes else None
+    pipe_network = PipeNetwork(
+        pipes, paths,
+        initial_c=sum(loop.initial_c for loop in loops.values()) / len(loops) if loops else 20.0,
+    ) if pipes else None
     source_zones = {name: emitter.zone for name, emitter in emitters.items()}
     source_zones.update({source.name: source.direct_zone for source in sources if source.direct_zone})
     air_source_positions = {}
@@ -419,7 +463,8 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
                 )
             irradiance[name] = incident
             solar_gain = sum(
-                incident * window["area_m2"] * window["solar_transmittance"] * (1 - window["shade"])
+                incident * window["area_m2"] * window["glazing_fraction"] *
+                window["solar_transmittance"] * (1 - window["shade"])
                 for window in windows[name]
             )
             sunlight[surface["room"]] += solar_gain

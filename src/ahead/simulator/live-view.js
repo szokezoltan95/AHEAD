@@ -1,7 +1,7 @@
 "use strict";
 
 const liveReadingKeys = {
-    heat_exchangers:"heat_kw", rooms:"air_c", circuits:"supply_c", emitters:"room_heat_kw",
+    heat_exchangers:"heat_kw", rooms:"air_c", circuits:"supply_c", emitters:"total_heat_kw",
     sources:"heat_kw", outdoor_units:"electrical_kw", surfaces:"irradiance_kw_m2",
     pipes:"flow_l_min", solar:"electrical_kw",
 };
@@ -80,7 +80,7 @@ function updateLivePlanItem(node,state) {
     if (group === "rooms") {
         const temperature = node.querySelector(".live-room-temperature");
         temperature.textContent = reading;
-        const load = (item?.emitters_kw ?? 0) + (item?.direct_heat_kw ?? 0);
+        const load = (item?.emitters_kw ?? 0) + (item?.emitter_radiant_kw ?? 0) + (item?.direct_heat_kw ?? 0);
         node.dataset.state = load > .03 ? "heating" : load < -.03 ? "cooling" : "idle";
         if (Number.isFinite(item?.target_c) && state.configured_objects?.rooms?.[name]?.preset !== "unheated") {
             details += ` · Target ${withUnit(item.target_c,"°C")}`;
@@ -95,7 +95,7 @@ function updateLivePlanItem(node,state) {
     } else {
         const [status,label] = item ? equipmentStatus(group,item) : ["idle","Waiting"];
         node.dataset.state = status;
-        if (group === "emitters") node.classList.toggle("is-heating", (item?.room_heat_kw || 0) > .03);
+        if (group === "emitters") node.classList.toggle("is-heating", (item?.total_heat_kw || 0) > .03);
         node.querySelector(".live-device-reading").textContent = reading;
         details = `${label} · ${reading}`;
     }
@@ -349,7 +349,7 @@ function drawHeatAirCells(state, plan, rooms, floor) {
     for (const [name,position] of Object.entries(plan.rooms||{})) {
         const room=rooms[name], reading=state.rooms?.[name];
         if(!room||room.level!==floor||!reading)continue;
-        const heating=(reading.emitters_kw||0)+(reading.direct_heat_kw||0);
+        const heating=(reading.emitters_kw||0)+(reading.emitter_radiant_kw||0)+(reading.direct_heat_kw||0);
         const [nx,ny]=reading.air_grid?.shape||[7,7];
         const cellW=room.length_m/nx,cellH=room.width_m/ny;
         const heights=reading.air_grid?.z_centers_m||[0.8];

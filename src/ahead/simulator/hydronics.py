@@ -33,6 +33,24 @@ class Emitter:
     local_sensor_bias_c: float = 0.0
     report_valve_opening: bool = False
     fixed_open: bool = False
+    construction: str = "panel"
+    panel_count: int = 0
+    convector_count: int = 0
+    width_m: float = 0.0
+    height_m: float = 0.0
+    rated_output_kw: float = 0.0
+    rated_delta_k: float = 50.0
+    water_delta_k: float = 10.0
+    output_exponent: float = 1.3
+    radiant_fraction: float = 0.25
+    radiator_water_l: float = 0.0
+    radiator_metal_kg: float = 0.0
+    radiator_metal_cp_j_kgk: float = 500.0
+
+    @property
+    def radiator_capacity_kwh_k(self):
+        return (self.radiator_water_l * 4.186 +
+                self.radiator_metal_kg * self.radiator_metal_cp_j_kgk / 1000) / 3600
 
 
 @dataclass(frozen=True)
@@ -54,12 +72,18 @@ class Hydronics:
             name: initial_air[emitter.zone] for name, emitter in emitters.items()
             if emitter.slab_capacity
         }
+        self.radiator_c = {
+            name: initial_air[emitter.zone] for name, emitter in emitters.items()
+            if emitter.rated_output_kw > 0
+        }
         self.valves = {name: float(emitter.fixed_open) for name, emitter in emitters.items()}
         self.circuits = {}
         self.details = {}
         self.pipe_network = pipe_network
         self.pipe_air_heat = {}
         self.pipe_fabric_heat = {}
+        self.emitter_fabric_heat = {}
+        self.radiator_heat = {}
         self._by_loop = {name: [] for name in loops}
         for name, emitter in emitters.items():
             self._by_loop[emitter.loop].append(name)
@@ -76,11 +100,16 @@ class Hydronics:
         for emitter in self.emitters.values():
             if emitter.slab_capacity:
                 yield (emitter.kw_k + emitter.slab_to_room_kw_k) / emitter.slab_capacity
+            if emitter.radiator_capacity_kwh_k:
+                radiator_ua = emitter.rated_output_kw / emitter.water_delta_k
+                yield max(radiator_ua, emitter.rated_output_kw / emitter.rated_delta_k) / emitter.radiator_capacity_kwh_k
 
     def exchange(self, air, valves, dt_s, *, fabric=None, outdoor=0, ground=0, pump_enabled=None):
         water_heat = dict.fromkeys(self.loops, 0.0)
         room_heat = dict.fromkeys(air, 0.0)
+        fabric_heat = dict.fromkeys(air, 0.0)
         slab_heat = {}
+        radiator_heat = {}
         self.pipe_air_heat = dict.fromkeys(air, 0.0)
         self.pipe_fabric_heat = dict.fromkeys(air, 0.0)
         for name, emitter in self.emitters.items():
@@ -105,21 +134,36 @@ class Hydronics:
             supply_by_emitter = {}
             return_by_emitter = {}
             if self.pipe_network:
-                pipe_frame = self.pipe_network.frame(loop_name, flows, air, fabric or air, outdoor, ground)
+                pipe_frame = self.pipe_network.frame(loop_name, flows, air, fabric or air,
+                                                     outdoor, ground, dt_s)
                 supply_by_emitter = pipe_frame.supply(supply, WATER_KW_PER_K_PER_L_MIN)
             for name in names:
                 emitter = self.emitters[name]
                 zone_c = air[emitter.zone]
-                emitter_c = self.slab.get(name, zone_c)
+                emitter_c = self.slab.get(name, self.radiator_c.get(name, zone_c))
                 branch = flows[name]
                 inlet = supply_by_emitter.get(name, supply)
                 rate = branch * WATER_KW_PER_K_PER_L_MIN
                 extracted = 0.0
-                if rate:
+                if emitter.rated_output_kw > 0:
+                    if rate:
+                        water_ua = emitter.rated_output_kw / emitter.water_delta_k
+                        extracted = rate * -expm1(-water_ua / rate) * (inlet - emitter_c)
+                    delta = emitter_c - zone_c
+                    total_output = (emitter.rated_output_kw * (abs(delta) / emitter.rated_delta_k) ** emitter.output_exponent
+                                    * (1 if delta >= 0 else -1))
+                    convective = total_output * (1 - emitter.radiant_fraction)
+                    radiant = total_output * emitter.radiant_fraction
+                    radiator_heat[name] = extracted - total_output
+                    fabric_heat[emitter.zone] += radiant
+                    delivered = convective
+                elif rate:
                     effectiveness = -expm1(-emitter.kw_k / rate)
                     extracted = rate * effectiveness * max(0.0, inlet - emitter_c)
+                    delivered = extracted
+                else:
+                    delivered = 0.0
                 water_heat[loop_name] -= extracted
-                delivered = extracted
                 if name in self.slab:
                     delivered = (emitter_c - zone_c) * emitter.slab_to_room_kw_k
                     slab_heat[name] = extracted - delivered
@@ -132,11 +176,23 @@ class Hydronics:
                     "opening": self.valves[name], "flow_l_min": branch, "supply_c": inlet,
                     "return_c": outlet, "drawn_route": name in supply_by_emitter,
                     "water_heat_kw": extracted, "room_heat_kw": delivered,
+                    "total_heat_kw": (total_output if emitter.rated_output_kw > 0 else delivered),
+                    "convective_heat_kw": delivered,
+                    "radiant_heat_kw": (radiant if emitter.rated_output_kw > 0 else 0.0),
+                    "radiator_c": self.radiator_c.get(name),
+                    "construction": emitter.construction,
+                    "width_m": emitter.width_m, "height_m": emitter.height_m,
+                    "panel_count": emitter.panel_count, "convector_count": emitter.convector_count,
+                    "rated_output_kw": emitter.rated_output_kw or None,
+                    "radiator_water_l": emitter.radiator_water_l or None,
+                    "radiator_metal_kg": emitter.radiator_metal_kg or None,
+                    "radiator_capacity_kwh_k": emitter.radiator_capacity_kwh_k or None,
                     "slab_c": self.slab.get(name),
                 }
             if pipe_frame:
                 pipe_frame.returns(return_by_emitter, WATER_KW_PER_K_PER_L_MIN)
-                water_heat[loop_name] -= pipe_frame.loss_kw
+                pipe_frame.finish()
+                water_heat[loop_name] -= pipe_frame.water_exchange_kw
                 for name, heat in pipe_frame.air_heat.items():
                     self.pipe_air_heat[name] += heat
                 for name, heat in pipe_frame.fabric_heat.items():
@@ -149,10 +205,14 @@ class Hydronics:
                 ) if flow else None,
                 "flow_l_min": flow, "pump_on": bool(flow and pump_enabled.get(loop_name, True)),
             }
+        self.emitter_fabric_heat = fabric_heat
+        self.radiator_heat = radiator_heat
         return water_heat, room_heat, slab_heat
 
-    def advance(self, dt_h, water_heat, slab_heat):
+    def advance(self, dt_h, water_heat, slab_heat, radiator_heat=None):
         for name, heat in water_heat.items():
             self.water[name] += heat * dt_h / self.loops[name].capacity
         for name, heat in slab_heat.items():
             self.slab[name] += heat * dt_h / self.emitters[name].slab_capacity
+        for name, heat in (radiator_heat or {}).items():
+            self.radiator_c[name] += heat * dt_h / self.emitters[name].radiator_capacity_kwh_k

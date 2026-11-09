@@ -465,7 +465,8 @@ function equipmentDialog(point,nodeId) {
         ];
         if (draft.equipment === "+ New radiator") fields.push(
             input("Radiator ID",radiatorId,next => radiatorId=next),
-            input("Radiator preset",preset,next => preset=next,["panel_radiator","column_radiator","towel_radiator"]),
+            input("Radiator preset",preset,next => preset=next,
+                ["panel_radiator","column_radiator","towel_radiator","custom_radiator"]),
             input("Room",room,next => room=next,list("rooms").map(row => row.id)),
             input("Water circuit",circuit,next => circuit=next,list("circuits").map(row => row.id)));
         if (draft.equipment === "+ New heat source") fields.push(
@@ -512,7 +513,7 @@ function newPipe(first,last,circuit,run,settings={}) {
     if (existing) return;
     const name = unique("pipe",Object.keys(pipes));
     pipes[name] = {mounting:"free_running",room:"",wall:"",offset_mm:40,diameter_mm:18,
-        insulation_mm:9,loss_w_mk:0,...settings,first,last,circuit,run};
+        wall_thickness_mm:2.5,material:"steel",insulation_mm:9,loss_w_mk:0,...settings,first,last,circuit,run};
     return name;
 }
 function drawPipe(point,nodeId) {
@@ -584,7 +585,7 @@ function junctionDialog(id) {
 function pipeDialog(name) {
     const plan = planData(), current = plan.pipes[name];
     const draft = {mounting:"free_running",room:"",wall:"",offset_mm:40,diameter_mm:18,
-        insulation_mm:9,loss_w_mk:0,...current};
+        wall_thickness_mm:2.5,material:"steel",insulation_mm:9,loss_w_mk:0,...current};
     const start = {...plan.nodes[current.first]}, end = {...plan.nodes[current.last]};
     const rooms = roomMap(project);
     const onFloor = Object.keys(plan.rooms).filter(id => rooms[id]?.level === start.level);
@@ -608,7 +609,9 @@ function pipeDialog(name) {
             input(`Start height above ${start.level} floor (mm)`,start.height_mm ?? 150,next => start.height_mm=next),
             input(`End height above ${end.level} floor (mm)`,end.height_mm ?? 150,next => end.height_mm=next),
             el("small","Heights are measured to the pipe centreline and also apply to other segments connected at these endpoints."));
-        fields.push(input("Outside diameter (mm)",draft.diameter_mm ?? 18,next => draft.diameter_mm=next),
+        fields.push(input("Pipe material",draft.material ?? "steel",next => draft.material=next,["steel","copper","pex","ppr"]),
+            input("Outside diameter (mm)",draft.diameter_mm ?? 18,next => draft.diameter_mm=next),
+            input("Wall thickness (mm)",draft.wall_thickness_mm ?? 2.5,next => draft.wall_thickness_mm=next),
             input("Insulation thickness (mm)",draft.insulation_mm ?? 9,next => draft.insulation_mm=next),
             input("Heat loss coefficient (W/m·K, 0 uses estimate)",draft.loss_w_mk ?? 0,next => draft.loss_w_mk=next));
         if (pairedPipes(name).length > 1) fields.push(input("Apply to supply-and-return pair",pair,next => pair=next));
@@ -618,7 +621,8 @@ function pipeDialog(name) {
                 if (wallMounted && (!draft.room || !draft.wall)) return "Choose a room and reference wall.";
                 const within = (value,low,high) => Number.isFinite(value) && value >= low && value <= high;
                 if (!within(start.height_mm ?? 150,-2000,10000) || !within(end.height_mm ?? 150,-2000,10000) ||
-                    !within(draft.diameter_mm,4,250) || !within(draft.insulation_mm,0,200) ||
+                    !within(draft.diameter_mm,4,250) || !within(draft.wall_thickness_mm,0.2,15) ||
+                    draft.diameter_mm <= 2*draft.wall_thickness_mm || !within(draft.insulation_mm,0,200) ||
                     !within(draft.offset_mm,0,1000) || !within(draft.loss_w_mk,0,100)) {
                     return "Enter valid pipe dimensions and endpoint heights.";
                 }
@@ -629,7 +633,7 @@ function pipeDialog(name) {
                         (wallMounted && plan.nodes[item.last].level !== level);
                 })) return "Choose a room on the same floor as the segments. Use free-running for risers.";
                 for (const id of targets) {
-                    for (const key of ["mounting","room","wall","offset_mm","diameter_mm","insulation_mm","loss_w_mk"]) {
+                    for (const key of ["mounting","room","wall","offset_mm","diameter_mm","wall_thickness_mm","material","insulation_mm","loss_w_mk"]) {
                         plan.pipes[id][key]=draft[key];
                     }
                 }
