@@ -149,6 +149,7 @@ dialog .toolbar { margin-bottom: 0; }
 .live-room-item:hover .plan-room,.live-room-item:focus-visible .plan-room,.live-room-item.selected .plan-room { stroke: var(--blue); stroke-width: 3; }
 .live-device-item .plan-equipment { stroke-width: 2; }
 .live-device-item[data-state="heating"] .plan-equipment { stroke: var(--supply); }
+.live-device-item.is-heating .plan-equipment { stroke: var(--supply); filter: drop-shadow(0 0 4px var(--supply)); }
 .live-device-item[data-state="cooling"] .plan-equipment,.live-device-item[data-state="flowing"] .plan-equipment { stroke: var(--return); }
 .live-device-item:hover .plan-equipment,.live-device-item:focus-visible .plan-equipment,.live-device-item.selected .plan-equipment { stroke-width: 3; fill: var(--blue-soft); }
 .live-device-reading,.live-device-item .plan-meta,.live-pipe-label { paint-order: stroke; stroke: var(--panel); stroke-width: 2.5; stroke-linejoin: round; pointer-events: none; }
@@ -220,4 +221,7 @@ dialog .toolbar { margin-bottom: 0; }
 #history-chart {width:100%;height:auto;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
 .air-cell {pointer-events:none;stroke:none}
 .heat-arrow {fill:#e97843;font-size:24px;font-weight:800;pointer-events:none}
-.interroom-arrow {fill:#9d55c7}
+.heat-arrow.exterior-arrow {fill:#3d9ba5}
+.interroom-arrow {stroke:#9d55c7;stroke-width:3;opacity:.85;pointer-events:none}
+.radiation-arrow {stroke:#e1a72a;stroke-dasharray:4 3}
+.conduction-arrow {stroke:#c37b42;stroke-dasharray:2 4}

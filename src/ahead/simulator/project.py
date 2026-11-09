@@ -335,6 +335,7 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
             _fraction(row["radiant_exchange_factor"])
             _reference(row, "adjacent_room", room_rows)
             _positive(row["kw_k"])
+            _fraction(row["opening_fraction"])
             if row["room"] == row["adjacent_room"]:
                 raise ValueError("A door must connect distinct rooms")
         if event == "hot_water_draw":
@@ -418,7 +419,7 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
                 ventilation[room] += volume[room] * event["extra_ach"] * 1.2 * 1.005 / 3600
             elif kind == "door_open":
                 pair = tuple(sorted((event["room"], event["adjacent_room"])))
-                doors[pair] += event["kw_k"]
+                doors[pair] += event["kw_k"] * event["opening_fraction"]
                 if event["radiant_area_m2"]:
                     radiation[pair] += event["radiant_area_m2"] * event["radiant_exchange_factor"]
             else:

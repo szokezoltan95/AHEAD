@@ -12,6 +12,7 @@ const equipmentGroups = {
 const readingUnits = {rooms:"°C", circuits:"°C", surfaces:"kW/m²", pipes:"L/min"};
 let liveState, liveFloor = "", liveFloorsKey = "", liveGeometryKey = "", inventoryKey = "";
 let livePlanItems = [], liveEquipmentCards = [];
+let heatmapEnabled = true;
 
 function withUnit(value,unit) {
     return Number.isFinite(value) ? `${format(value)} ${unit}` : "—";
@@ -93,6 +94,7 @@ function updateLivePlanItem(node,state) {
     } else {
         const [status,label] = item ? equipmentStatus(group,item) : ["idle","Waiting"];
         node.dataset.state = status;
+        if (group === "emitters") node.classList.toggle("is-heating", (item?.room_heat_kw || 0) > .03);
         node.querySelector(".live-device-reading").textContent = reading;
         details = `${label} · ${reading}`;
     }
@@ -160,6 +162,11 @@ for (const [id,className] of [
         drawLivePlan(liveState);
     };
 }
+$("live-heatmap-toggle").onclick = () => {
+    heatmapEnabled = !heatmapEnabled;
+    $("live-heatmap-toggle").setAttribute("aria-pressed",heatmapEnabled);
+    drawLivePlan(liveState);
+};
 $("live-overview").onclick = () => selectLive("","",false);
 $("live-json").ontoggle = () => {
     if ($("live-json").open && liveState) $("full").textContent = JSON.stringify(liveState,null,2);
@@ -321,6 +328,8 @@ function drawDeviceRemote(state) {
 function drawHeatAirCells(state, plan, rooms, floor) {
     const svgCanvas = $("live-svg");
     svgCanvas.querySelectorAll(".air-cell, .heat-arrow").forEach(node=>node.remove());
+    if (!heatmapEnabled) return;
+    const layer = svg("g",{class:"heat-overlay"});
     const active = Object.values(state.sources||{}).filter(s=>s.heat_kw>0.05);
     for (const [name,position] of Object.entries(plan.rooms||{})) {
         const room=rooms[name], reading=state.rooms?.[name];
@@ -331,25 +340,42 @@ function drawHeatAirCells(state, plan, rooms, floor) {
         for(let y=0;y<n;y++)for(let x=0;x<n;x++){
             const distance=Math.hypot((x+.5)/n-.5,(y+.5)/n-.5);
             const warm=heating>0.03?Math.max(0,1-distance*1.5):0;
-            const ac=active.some(a=>a.zone===name)&&Object.values(state.sources||{}).some(a=>a.zone===name&&a.fan_kw>0);
+            const ac=Object.values(state.sources||{}).some(a=>a.zone===name&&a.fan_kw>0);
             const cell=svg("rect",{x:(position.x+x*cellW)*PLAN_SCALE,y:(position.y+y*cellH)*PLAN_SCALE,
                 width:cellW*PLAN_SCALE,height:cellH*PLAN_SCALE,class:"air-cell"});
-            const temp=reading.air_c+(warm*1.4)+(ac?(x%2?0.35:-0.2):0);
+            const phase=(state.elapsed_s||0)/90;
+            const swirl=ac?Math.sin((x/n)*Math.PI*4+phase)*Math.cos((y/n)*Math.PI*3-phase*.7)*1.1:0;
+            const temp=reading.air_c+(warm*1.8)+swirl;
             cell.style.fill=`hsl(${Math.max(0,210-(temp-16)*13)} 78% 58% / .28)`;
-            svgCanvas.append(cell);
+            layer.append(cell);
         }
         if(heating>0.03){
             const arrow=svg("text",{x:gx*PLAN_SCALE,y:gy*PLAN_SCALE,class:"heat-arrow"});
-            arrow.textContent="↑";svgCanvas.append(arrow);
+            arrow.textContent="↑";layer.append(arrow);
+        }
+        if ((reading.envelope_kw||0)<-.01) {
+            const loss=svg("text",{x:(position.x+.16)*PLAN_SCALE,
+                y:(position.y+room.width_m*.5)*PLAN_SCALE,class:"heat-arrow exterior-arrow"});
+            loss.textContent="←";layer.append(loss);
         }
     }
     for(const link of state.heat_links||[]){
-        if(link.kind!=="airflow"||Math.abs(link.kw)<.005)continue;
+        if(!["airflow","radiation","conduction"].includes(link.kind)||Math.abs(link.kw)<.005)continue;
         const a=plan.rooms?.[link.first],b=plan.rooms?.[link.second];
         if(!a||!b||rooms[link.first]?.level!==floor||rooms[link.second]?.level!==floor)continue;
-        const x=(a.x+rooms[link.first].length_m/2)*PLAN_SCALE;
-        const y=(a.y+rooms[link.first].width_m/2)*PLAN_SCALE;
-        const arrow=svg("text",{x,y,class:"heat-arrow interroom-arrow"});
-        arrow.textContent=link.kw>0?"→":"←";svgCanvas.append(arrow);
+        const ar=rooms[link.first],br=rooms[link.second];
+        const ax=(a.x+ar.length_m/2)*PLAN_SCALE, ay=(a.y+ar.width_m/2)*PLAN_SCALE;
+        const bx=(b.x+br.length_m/2)*PLAN_SCALE, by=(b.y+br.width_m/2)*PLAN_SCALE;
+        const forward=link.kw>0;
+        layer.append(svg("line",{x1:forward?ax:bx,y1:forward?ay:by,x2:forward?bx:ax,y2:forward?by:ay,
+            class:`heat-arrow interroom-arrow ${link.kind}-arrow`, "marker-end":"url(#heat-arrowhead)"}));
     }
+    const defs=svgCanvas.querySelector("defs");
+    if(defs&&!defs.querySelector("#heat-arrowhead")){
+        const marker=svg("marker",{id:"heat-arrowhead",viewBox:"0 0 10 10",refX:8,refY:5,
+            markerWidth:5,markerHeight:5,orient:"auto-start-reverse"});
+        marker.append(svg("path",{d:"M 0 0 L 10 5 L 0 10 z",fill:"#9d55c7"}));defs.append(marker);
+    }
+    const firstItem=svgCanvas.querySelector(".live-pipe-item, .live-device-item");
+    svgCanvas.insertBefore(layer,firstItem||null);
 }

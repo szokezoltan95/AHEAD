@@ -50,6 +50,7 @@
                 <button id="live-pipes-toggle" data-icon="pipe" aria-pressed="true">Pipes</button>
                 <button id="live-equipment-toggle" data-icon="radiator" aria-pressed="true">Equipment</button>
                 <button id="live-flow-toggle" data-icon="activity" aria-pressed="false">Flow labels</button>
+                <button id="live-heatmap-toggle" data-icon="activity" aria-pressed="true">Air temperature grid</button>
             </div>
             <svg class="plan-canvas" id="live-svg" aria-label="Live floor plan"></svg>
             <div class="live-legend" id="live-pipe-legend">
@@ -276,7 +277,9 @@ function redrawForms() {
                 if (key === "boundary") options = ["outdoors","room","ground","adiabatic"];
                 if (key === "mode_rule") options = ["largest_demand","heat_priority","cool_priority"];
                 if (key === "allocation") options = ["proportional","in_order"];
-                card.append(input(human(key), row[key] ?? defaultValue, value => row[key] = value,
+                const fieldLabel = section === "events" && key === "opening_fraction"
+                    ? "Opening fraction (0–1)" : human(key);
+                card.append(input(fieldLabel, row[key] ?? defaultValue, value => row[key] = value,
                     options, key === "start_s" || (section === "events" && key === "duration_s")));
             }
             const duplicate = el("button","Duplicate");
