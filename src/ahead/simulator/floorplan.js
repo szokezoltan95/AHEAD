@@ -409,7 +409,9 @@ function wallDialog(name,side) {
     const extent = ["north","south"].includes(side) ? room.length_m : room.width_m;
     function show() {
         const fields = [input("Exterior construction",wall.construction,next => wall.construction=next,
-            catalogue.wall_types.filter(type => !["insulated_ceiling","insulated_floor","partition"].includes(type)))];
+            catalogue.wall_types.filter(type => !["insulated_ceiling","insulated_floor","partition"].includes(type))),
+            input("Buried wall height (m)",wall.ground_height_m ?? 0,next => wall.ground_height_m=next)];
+        wall.openings ??= [];
         if (!placement.derive) fields.push(el("small","Enable generated walls in the room settings to use these values in the simulation."));
         for (const [index,opening] of wall.openings.entries()) {
             const entry = el("fieldset"); entry.append(el("legend",`Opening ${index+1}`),
@@ -463,7 +465,7 @@ function equipmentDialog(point,nodeId) {
         ];
         if (draft.equipment === "+ New radiator") fields.push(
             input("Radiator ID",radiatorId,next => radiatorId=next),
-            input("Radiator preset",preset,next => preset=next,["panel_radiator","column_radiator"]),
+            input("Radiator preset",preset,next => preset=next,["panel_radiator","column_radiator","towel_radiator"]),
             input("Room",room,next => room=next,list("rooms").map(row => row.id)),
             input("Water circuit",circuit,next => circuit=next,list("circuits").map(row => row.id)));
         if (draft.equipment === "+ New heat source") fields.push(

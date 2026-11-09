@@ -214,3 +214,5 @@ dialog .toolbar { margin-bottom: 0; }
 #live-remote-fields label { display: grid; gap: .25rem; align-content: start; }
 #live-remote-fields select, #live-remote-fields input { min-width: 0; width: 100%; box-sizing: border-box; }
 #live-remote-status { margin: .65rem 0 0; }
+
+.live-metric[hidden] { display: none; }

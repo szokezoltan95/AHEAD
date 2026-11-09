@@ -32,6 +32,7 @@ class Emitter:
     local_sensor_warming_c: float = 1.5
     local_sensor_bias_c: float = 0.0
     report_valve_opening: bool = False
+    fixed_open: bool = False
 
 
 @dataclass(frozen=True)
@@ -53,7 +54,7 @@ class Hydronics:
             name: initial_air[emitter.zone] for name, emitter in emitters.items()
             if emitter.slab_capacity
         }
-        self.valves = dict.fromkeys(emitters, 0.0)
+        self.valves = {name: float(emitter.fixed_open) for name, emitter in emitters.items()}
         self.circuits = {}
         self.details = {}
         self.pipe_network = pipe_network
@@ -84,7 +85,9 @@ class Hydronics:
         self.pipe_fabric_heat = dict.fromkeys(air, 0.0)
         for name, emitter in self.emitters.items():
             request = valves.get(name, 0.0)
-            if emitter.travel_s:
+            if emitter.fixed_open:
+                self.valves[name] = 1.0
+            elif emitter.travel_s:
                 maximum_move = dt_s / emitter.travel_s
                 difference = request - self.valves[name]
                 self.valves[name] += max(-maximum_move, min(maximum_move, difference))
@@ -123,7 +126,8 @@ class Hydronics:
                 outlet = inlet - extracted / rate if rate else None
                 return_by_emitter[name] = outlet
                 self.details[name] = {
-                    "zone": emitter.zone, "loop": loop_name, "request": valves.get(name, 0),
+                    "zone": emitter.zone, "loop": loop_name, "fixed_open": emitter.fixed_open,
+                    "request": 1.0 if emitter.fixed_open else valves.get(name, 0),
                     "opening": self.valves[name], "flow_l_min": branch, "supply_c": inlet,
                     "return_c": outlet, "drawn_route": name in supply_by_emitter,
                     "water_heat_kw": extracted, "room_heat_kw": delivered,

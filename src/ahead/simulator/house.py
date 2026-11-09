@@ -67,6 +67,9 @@ class Source:
     indoor_fan_kw: float = 0.045
     report_indoor_humidity: bool = False
     humidity_setpoint_control: bool = False
+    automatic_heat_calls: bool = True
+    water_hysteresis_c: float = 0
+    heat_pump_tariff: bool = False
 
 
 @dataclass(frozen=True)
@@ -103,6 +106,7 @@ class Conditions:
     solar_thermal: Mapping[str, tuple[str, float, float]] = field(default_factory=dict)
     solar_pv_kw: float = 0
     dhw_draw_l_min: Mapping[str, float] = field(default_factory=dict)
+    heat_pump_price_kwh: float | None = None
 
 
 @dataclass
@@ -116,6 +120,9 @@ class Totals:
     pv_kwh: float = 0
     import_kwh: float = 0
     export_kwh: float = 0
+    house_electricity_kwh: float = 0
+    heat_pump_electricity_kwh: float = 0
+    heat_pump_cost: float = 0
 
 
 @dataclass
@@ -229,9 +236,19 @@ class House:
                 raise ValueError("Unsupported shared heat-pump mode or allocation rule")
             if unit.defrost_duration_s > unit.defrost_period_s:
                 raise ValueError("Defrost duration cannot exceed its period")
+        self._outdoor_tariffs: dict[str, bool] = {}
         for source in sources:
             _check((source.max_heat_kw, source.efficiency), positive=True)
             _check((source.min_on_s, source.min_off_s, source.min_fraction, source.indoor_fan_kw))
+            _check((source.water_hysteresis_c,))
+            if source.water_hysteresis_c and (source.modulating or source.direct_zone is not None):
+                raise ValueError("Water hysteresis requires an on/off hydronic source")
+            if source.heat_pump_tariff and source.fuel != "electricity":
+                raise ValueError("The heat-pump electricity meter requires an electric source")
+            if source.outdoor_unit:
+                previous = self._outdoor_tariffs.setdefault(source.outdoor_unit, source.heat_pump_tariff)
+                if previous != source.heat_pump_tariff:
+                    raise ValueError("Indoor units sharing a compressor must use the same meter")
             if source.min_fraction > 1:
                 raise ValueError("Minimum output fraction cannot exceed one")
             if source.dhw_loop and (source.dhw_loop not in loops or not loops[source.dhw_loop].dhw):
@@ -261,8 +278,8 @@ class House:
                 )
                 for source in sources
             },
-            frozenset(emitters),
-            {name: emitter.zone for name, emitter in emitters.items()},
+            frozenset(name for name, emitter in emitters.items() if not emitter.fixed_open),
+            {name: emitter.zone for name, emitter in emitters.items() if not emitter.fixed_open},
         )
 
         # Bound each explicit integration step by the fastest thermal node.
@@ -286,7 +303,8 @@ class House:
         self.totals = Totals()
         self._source_state = {name: _SourceState() for name in self.sources}
         self._source_heat_kw = dict.fromkeys(self.sources, 0.0)
-        self.hydronics.valves = dict.fromkeys(self.hydronics.emitters, 0.0)
+        self.hydronics.valves = {name: float(emitter.fixed_open)
+                                 for name, emitter in self.hydronics.emitters.items()}
         self._source_details.clear()
         self._outdoor_details.clear()
         self._balance.clear()
@@ -379,6 +397,8 @@ class House:
                 conditions.solar_pv_kw, *conditions.ventilation_kw_k.values(),
                 *conditions.door_exchange_kw_k.values(), *conditions.radiant_opening_m2.values(),
                 *conditions.dhw_draw_l_min.values()))
+        if conditions.heat_pump_price_kwh is not None:
+            _check((conditions.heat_pump_price_kwh,))
         if not all(map(isfinite, (conditions.outdoor_c, conditions.electricity_price_kwh,
                                   conditions.gas_price_kwh))):
             raise ValueError("Weather and tariffs must be finite")
@@ -448,6 +468,7 @@ class House:
             outdoor=conditions.outdoor_c, ground=conditions.ground_c
         )
         electricity_kw = conditions.appliance_kw
+        heat_pump_kw = 0.0
         gas_kw = heat_kw = 0.0
         outdoor = conditions.outdoor_c
         appliance_gains = (conditions.occupied_gains_kw + conditions.appliance_kw) / len(self.zones)
@@ -546,12 +567,17 @@ class House:
                 error = (target - self._air[source.direct_zone]) * direction
                 request = direction * min(abs(request), max(0, error / 2))
             demand[name] = request * plan.fan_fractions.get(name, 1)
-        allocated, overhead_kw = self._outdoor_allocation(demand, available_sources, outdoor)
-        electricity_kw += overhead_kw
+        allocated = self._outdoor_allocation(demand, available_sources, outdoor)
+        for name, detail in self._outdoor_details.items():
+            if self._outdoor_tariffs.get(name, False):
+                heat_pump_kw += detail["electrical_kw"]
+            else:
+                electricity_kw += detail["electrical_kw"]
         for name, source in self.sources.items():
             request = demand[name]
             loop_name = self._source_loop(name, source)
             water_target = None
+            stopped = name in plan.stopped_sources
             limit_kw = source.max_heat_kw
             if source.direct_zone is None:
                 loop = self.hydronics.loops[loop_name]
@@ -560,6 +586,12 @@ class House:
                     water_target = min(loop.target_c, plan.water_setpoints_c.get(name, loop.target_c))
                 headroom = (water_target - self.hydronics.water[loop_name]) * loop.capacity / dt_h
                 limit_kw = min(limit_kw, max(0.0, headroom - water_flow[loop_name]))
+                if source.water_hysteresis_c:
+                    threshold = water_target
+                    if not self._source_state[name].on:
+                        threshold -= source.water_hysteresis_c
+                    stopped = (stopped or not request or self.hydronics.water[loop_name] >= threshold
+                               or limit_kw < source.max_heat_kw)
             if source.outdoor_unit:
                 requested_kw = allocated.get(name, 0.0)
                 limit_kw = abs(requested_kw)
@@ -571,7 +603,7 @@ class House:
                 requested_kw = 0.0
 
             delivered, status = self._source_output(source, requested_kw, limit_kw,
-                name in available_sources, name in plan.stopped_sources)
+                name in available_sources, stopped)
             self._source_heat_kw[name] = delivered
             latent_kw = 0.0
             fan_kw = 0.0
@@ -604,6 +636,8 @@ class House:
             power = abs(delivered) / efficiency
             if source.fuel == "gas":
                 gas_kw += power
+            elif source.heat_pump_tariff:
+                heat_pump_kw += power + fan_kw
             else:
                 electricity_kw += power + fan_kw
             if source.outdoor_unit:
@@ -619,6 +653,7 @@ class House:
                 "input_kw": power + fan_kw, "fuel": source.fuel, "efficiency": efficiency, "status": status,
                 "fan_kw": fan_kw, "latent_cooling_kw": latent_kw, "sensible_heat_kw": sensible,
                 "starts": self._source_state[name].starts,
+                "heat_pump_tariff": source.heat_pump_tariff,
             }
 
         for name, zone in self.zones.items():
@@ -636,20 +671,29 @@ class House:
         self.hydronics.advance(dt_h, water_flow, slab_heat)
         imported = max(0, electricity_kw - conditions.solar_pv_kw)
         exported = max(0, conditions.solar_pv_kw - electricity_kw)
-        self.totals.electricity_kwh += electricity_kw * dt_h
+        self.totals.house_electricity_kwh += electricity_kw * dt_h
+        self.totals.heat_pump_electricity_kwh += heat_pump_kw * dt_h
+        self.totals.electricity_kwh += (electricity_kw + heat_pump_kw) * dt_h
         self.totals.gas_kwh += gas_kw * dt_h
         self.totals.generated_heat_kwh += sum(max(0, value) for value in self._source_heat_kw.values()) * dt_h
         self.totals.cooling_kwh += sum(max(0, -value) for value in self._source_heat_kw.values()) * dt_h
         self.totals.pv_kwh += conditions.solar_pv_kw * dt_h
-        self.totals.import_kwh += imported * dt_h
+        self.totals.import_kwh += (imported + heat_pump_kw) * dt_h
         self.totals.export_kwh += exported * dt_h
-        self.totals.cost += (imported * conditions.electricity_price_kwh + gas_kw * conditions.gas_price_kwh) * dt_h
+        heat_pump_rate = conditions.heat_pump_price_kwh
+        if heat_pump_rate is None:
+            heat_pump_rate = conditions.electricity_price_kwh
+        heat_pump_cost = heat_pump_kw * heat_pump_rate * dt_h
+        self.totals.heat_pump_cost += heat_pump_cost
+        self.totals.cost += (imported * conditions.electricity_price_kwh + gas_kw * conditions.gas_price_kwh) * dt_h + heat_pump_cost
         self._balance = {
             "room_air_net_kw": sum(air_flow.values()), "fabric_net_kw": sum(fabric_flow.values()),
             "water_net_kw": sum(water_flow.values()), "slab_net_kw": sum(slab_heat.values()),
-            "electricity_kw": electricity_kw, "gas_kw": gas_kw, "net_source_heat_kw": heat_kw,
+            "electricity_kw": electricity_kw + heat_pump_kw, "gas_kw": gas_kw, "net_source_heat_kw": heat_kw,
+            "house_electricity_kw": electricity_kw, "heat_pump_electricity_kw": heat_pump_kw,
+            "house_grid_import_kw": imported,
             "solar_collector_kw": solar_collected, "pv_kw": conditions.solar_pv_kw,
-            "import_kw": imported, "export_kw": exported,
+            "import_kw": imported + heat_pump_kw, "export_kw": exported,
         }
 
     def _source_loop(self, name, source):
@@ -664,7 +708,6 @@ class House:
 
     def _outdoor_allocation(self, requests, available, outdoor):
         allocated = {}
-        overhead = 0.0
         for name, unit in self.outdoor_units.items():
             demand = {
                 key: requests[key] * source.max_heat_kw
@@ -685,7 +728,6 @@ class House:
                 and self.elapsed_s % unit.defrost_period_s >= unit.defrost_period_s - unit.defrost_duration_s
             )
             electrical_kw = unit.defrost_power_kw if defrost else 0.0
-            overhead += electrical_kw
             factor = min(1, capacity / sum(same_mode.values())) if same_mode and not defrost else 0
             if unit.allocation == "in_order" and not defrost:
                 remaining = capacity
@@ -702,7 +744,7 @@ class House:
                 "allocated_kw": sum(share.values()), "defrost": defrost,
                 "electrical_kw": electrical_kw,
             }
-        return allocated, overhead
+        return allocated
 
     def _source_output(self, source, requested_kw, limit_kw, available, stopped=False):
         state = self._source_state[source.name]

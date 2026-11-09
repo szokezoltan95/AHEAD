@@ -175,6 +175,9 @@ const metricValues = [
     metric("thermometer","Outdoor"), metric("house","Mean room temperature"),
     metric("boiler","Heating output"), metric("power","Electric load"),
 ];
+const meterMetrics = [
+    metric("power","House meter"), metric("power","Heat-pump meter"),
+];
 
 function equipmentIcon(group,item,config) {
     if (group === "sources" && (item.outdoor_unit || config?.preset === "air_to_water")) return "fan";
@@ -224,6 +227,13 @@ function drawLiveDashboard(state) {
         withUnit(heat,"kW"), withUnit(state.balance?.electricity_kw,"kW"),
     ];
     metricValues.forEach((node,index) => { node.textContent = values[index]; });
+    const separateMeter = state.weather?.heat_pump_price != null ||
+        sources.some(item => item.heat_pump_tariff);
+    const meterLoads = [state.balance?.house_electricity_kw, state.balance?.heat_pump_electricity_kw];
+    meterMetrics.forEach((node,index) => {
+        node.parentElement.hidden = !separateMeter;
+        node.textContent = withUnit(meterLoads[index],"kW");
+    });
 
     const key = JSON.stringify(Object.keys(equipmentGroups).map(group =>
         Object.keys(state[group] || {})));

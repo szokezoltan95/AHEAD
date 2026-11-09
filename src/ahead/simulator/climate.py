@@ -162,6 +162,8 @@ class ClimateControls:
                         loops.append(exchanger.source)
         self.units = {}
         for name, emitter in house.hydronics.emitters.items():
+            if emitter.fixed_open:
+                continue
             key = "trv_"+name
             self.units[key] = ClimateUnit(key,"trv",name,emitter.zone,
                 self.target(emitter.zone),("off","heat"))
@@ -317,7 +319,7 @@ class ClimateControls:
             eligible = (
                 (name, source) for upstream in self.upstream[loop]
                 for name, source in self.house.sources.items()
-                if source.direct_zone is None and source.loop == upstream
+                if source.direct_zone is None and source.automatic_heat_calls and source.loop == upstream
                 and name in observation.available_sources and raw["source"].get(name) != 0
             )
             selected = next(eligible, None)

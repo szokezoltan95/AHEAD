@@ -16,6 +16,7 @@ import paho.mqtt.client as mqtt
 from ahead.control import ControlPlan, Observation
 from ahead.simulator.climate import ClimateControls
 from ahead.simulator.console import Console, serve_console
+from ahead.simulator.project import prepare_project
 from ahead.simulator.scenario import Sample, Scenario, load_scenario
 
 
@@ -96,12 +97,20 @@ class MqttHouse:
             f"hydronic_{actuator.key}": actuator for actuator in self.actuators
             if self._publish_actuator(actuator) and actuator.kind == "source"
         }
+        self._automatic_sources = {
+            actuator.key for actuator in self._hydronic.values()
+            if scenario.house.sources[actuator.key].automatic_heat_calls
+        }
+        self._separate_meter = any(
+            source.heat_pump_tariff for source in scenario.house.sources.values()
+        )
         self._water_targets = {
             actuator.key: actuator for actuator in self.actuators if actuator.kind == "water_setpoint"
         }
         self.remote_devices = self.climate.remote_catalog()
         for key, actuator in self._hydronic.items():
-            fields = {"mode": {"label": "Heat request", "options": ["auto", "on", "off"]}}
+            options = ["auto", "on", "off"] if actuator.key in self._automatic_sources else ["off", "on"]
+            fields = {"mode": {"label": "Heat request", "options": options}}
             if actuator.modulating:
                 fields["output"] = {"label": "Manual output request", "min": 1, "max": 100, "step": 1, "unit": "%"}
             if actuator.key in self._water_targets:
@@ -136,7 +145,7 @@ class MqttHouse:
                 return
             actuator = self._hydronic[device]
             if field == "mode":
-                if value == "auto":
+                if value == "auto" and actuator.key in self._automatic_sources:
                     self._requests.pop(actuator, None)
                     self._local_requests.discard(actuator)
                     return
@@ -175,6 +184,14 @@ class MqttHouse:
             components[key] = self._sensor(key, f"{label} temperature", "°C", "temperature")
         for key, label in (("electricity", "Electricity used"), ("gas", "Gas energy used")):
             components[key] = self._sensor(key, label, "kWh", "energy", "total_increasing")
+        if self._separate_meter:
+            components["house_electricity"] = self._sensor(
+                "house_electricity", "House electricity used", "kWh", "energy", "total_increasing"
+            )
+            components["heat_pump_electricity"] = self._sensor(
+                "heat_pump_electricity", "Heat-pump tariff electricity used", "kWh", "energy", "total_increasing"
+            )
+            components["heat_pump_price"] = self._sensor("heat_pump_price", "Heat-pump electricity tariff", None)
         components["elapsed"] = self._sensor("elapsed", "Simulation elapsed time", "s", "duration")
         if self.scenario.environment:
             for name, loop in self.scenario.house.hydronics.loops.items():
@@ -248,7 +265,7 @@ class MqttHouse:
                 "name": name.replace("_", " ").title(),
                 "components": device_components,
             })
-        if any(unit.kind == "trv" for unit in self.climate.units.values()):
+        if self._automatic_sources and any(unit.kind == "trv" for unit in self.climate.units.values()):
             components["automatic_heat_calls"] = {
                 "platform":"button", "name":"Resume automatic heat calls",
                 "unique_id":identifier+"_automatic_heat_calls", "command_topic":self._resume_topic,
@@ -285,11 +302,15 @@ class MqttHouse:
         if reason_code.is_failure:
             LOGGER.error("MQTT connection rejected: %s", reason_code)
             return
-        topics = [*self._commands,*self.climate.commands,self._resume_topic]
-        client.subscribe([(topic, 1) for topic in topics])
+        topics = [*self._commands, *self.climate.commands]
+        if self._automatic_sources:
+            topics.append(self._resume_topic)
+        if topics:
+            client.subscribe([(topic, 1) for topic in topics])
         discovery = self.discovery()
         self._discovery_removals(discovery)
         components = discovery["components"]
+        components.setdefault("automatic_heat_calls", {"platform": "button"})
         child_components = {name for child in discovery.get("child_devices", ())
                             for name, component in child["components"].items() if "unique_id" in component}
         for actuator in self.actuators:
@@ -332,8 +353,7 @@ class MqttHouse:
                 with self._lock:
                     self._requests = {
                         actuator:value for actuator,value in self._requests.items()
-                        if not (actuator.kind == "source" and
-                                self.scenario.house.sources[actuator.key].direct_zone is None)
+                        if not (actuator.kind == "source" and actuator.key in self._automatic_sources)
                     }
                     self._local_requests.intersection_update(self._requests)
             return
@@ -377,7 +397,9 @@ class MqttHouse:
             for key, actuator in self._hydronic.items():
                 name = actuator.key
                 manual = requests["source"].get(name)
-                mode = "auto" if manual is None else "on" if manual else "off"
+                mode = "on" if manual else "off"
+                if manual is None and name in self._automatic_sources:
+                    mode = "auto"
                 target = self.scenario.house.hydronics.loops[self.scenario.house.sources[name].loop].target_c
                 plan.climate_states[key] = {
                     "kind": "hydronic", "device": name, "mode": mode,
@@ -399,6 +421,12 @@ class MqttHouse:
                if self.scenario.house.sources[name].report_heat
                and self.scenario.house.sources[name].direct_zone is None},
         }
+        if self._separate_meter:
+            totals = self.scenario.house.totals
+            rate = sample.observation.heat_pump_price_kwh
+            readings.update(house_electricity=totals.house_electricity_kwh,
+                            heat_pump_electricity=totals.heat_pump_electricity_kwh,
+                            heat_pump_price=sample.observation.electricity_price_kwh if rate is None else rate)
         if self.scenario.environment:
             readings["forecast"] = sample.observation.forecast_outdoor_c
             hydronics = self.scenario.house.hydronics
@@ -499,13 +527,18 @@ def main() -> None:
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
     try:
-        console = Console(args.project_store) if args.console_port else None
+        source_text = args.scenario.read_text(encoding="utf-8-sig")
+        default_project = json.loads(source_text) if source_text.lstrip().startswith("{") else None
+        console = Console(args.project_store, default_project) if args.console_port else None
         server = serve_console(console, args.console_port) if console else None
         registry = {}
         try:
             while not stop.is_set():
                 pending = console.next_run() if console else None
-                scenario, diagnostic = pending if pending else (load_scenario(args.scenario), None)
+                if pending is None:
+                    pending = (prepare_project(default_project) if default_project is not None
+                               else (load_scenario(args.scenario), None))
+                scenario, diagnostic = pending
                 run_live(scenario, args.host, args.port, args.house_id, args.discovery_prefix,
                          args.publish_interval, stop, console, diagnostic, registry)
                 if console is None:

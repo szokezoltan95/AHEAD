@@ -38,19 +38,19 @@ Compose starts the simulator, an MQTT broker, Home Assistant Container, and a lo
 
 1. Open [Home Assistant](http://localhost:8123) and complete onboarding.
 2. In **Settings → Devices & services → Add integration**, select **MQTT**. Enter broker host `mqtt` and port `1883`. Leave the username and password blank. The broker is on the Compose network and its port is unpublished.
-3. Under **Settings → Devices & services → MQTT**, open a simulated device such as **Kitchen TRV**. Select **Heat** and set a temperature above the current reading. The TRV opens its valve and calls for heat from an available source on its circuit. Watch the valve, boiler output and supply temperature in the simulator.
+3. Under **Settings → Devices & services → MQTT**, open a simulated device such as **Kitchen TRV**. Select **Heat** and set a temperature above the current reading. The TRV opens its valve. A source configured for automatic heat calls can respond to the request. Watch the valve, boiler output and supply temperature in the simulator.
 
 ### Simulated climate controls
 
-- Each radiator and underfloor emitter has a heat-only climate entity. **Manual** uses a fixed thermostat response. **Adaptive** tracks temperature after the valve closes and learns an early cut-off correction from repeated overshoot. The simulator lets you tune **Early cut-off correction** independently of the signed **Sensor correction**.
+- Each emitter with a controllable thermostat has a heat-only climate entity. A fixed-open radiator has no thermostat or valve control. **Manual** uses a fixed thermostat response. **Adaptive** tracks temperature after the valve closes and learns an early cut-off correction from repeated overshoot. The simulator lets you tune **Early cut-off correction** independently of the signed **Sensor correction**.
 - A TRV's **Temperature sensor source** can use its **built-in** reading, the simulated **room sensor**, or an **external input** written from Home Assistant. The built-in sensor can have a fixed bias and warm up near an active radiator. External inputs expire after 15 simulated minutes and fall back to the built-in sensor. The thermostat diagnostics show which value was used.
 - A reversible room unit offers **Heat**, **Cool**, **Auto**, **Dry**, **Fan only** and **Off**. It modulates demand from the temperature error and reports the actual operating action after applying equipment limits. Fan settings affect electrical draw. Dry mode uses a simplified room-moisture and coil model. The swing setting is reported as device state. The room model treats air as mixed, so it has no directional airflow calculation.
-- Open **Live**, select an emitter, indoor unit, or heat source under **Equipment**, and use **Device controls** as its local remote or thermostat. Changes are applied to the running house and reflected in Home Assistant. Climate units start **Off** on a new run. A manual boiler command overrides automatic heat calls until you return the boiler to **Auto** in Live or press **Resume automatic heat calls** in Home Assistant.
+- Open **Live**, select an emitter, indoor unit, or heat source under **Equipment**, and use **Device controls** as its local remote or thermostat. Changes are applied to the running house and reflected in Home Assistant. Climate units start **Off** on a new run. Boilers configured for manual control have **Off** and **On** settings. Where a boiler accepts automatic heat calls, return it to **Auto** in Live or press **Resume automatic heat calls** in Home Assistant.
 - Home Assistant receives only the controls and readings exposed by the simulated equipment profile. A typical TRV exposes setpoint, mode, sensor selection and correction, and heating action. Actual valve opening is available to Home Assistant when enabled on the emitter profile. Sensor warming, learned overshoot, actual valve travel and detailed compressor measurements are visible in the simulator. For an A/C profile, indoor humidity reporting and target humidity control are optional.
 
 Use `docker compose logs -f simulator` to see connections and received requests. Use `docker compose down` to stop the bench. Home Assistant keeps its configuration in a Docker volume. The simulated house starts from the scenario's initial state when the simulator restarts.
 
-Set `AHEAD_SCENARIO` in a Compose `.env` file to mount a different TOML scenario. The web ports bind to loopback. For a remote Docker host, forward the desired port to your computer with SSH. Home Assistant still discovers the virtual devices through the internal MQTT broker.
+Set `AHEAD_SCENARIO` in the Compose `.env` file to load a TOML scenario or a floor-plan project JSON at startup. For a private project, save it as `private-house.json` beside `compose.yaml` and set `AHEAD_SCENARIO=./private-house.json`. An existing applied project takes precedence. To switch an existing installation, import the JSON in **Configure** and choose **Apply and restart simulation**. The web ports bind to loopback. For a remote Docker host, forward the desired port to your computer with SSH. Home Assistant still discovers the virtual devices through the internal MQTT broker.
 
 ## Configure and monitor the house
 
@@ -74,7 +74,9 @@ Rooms drawn from scratch generate wall areas and shared surfaces. Existing rooms
 | Solar and electrical | Surface irradiance from the scenario location, time and orientation, glazing gains, solar thermal, PV, and electrical import and export |
 | Scenarios | Actual and forecast weather, occupancy and tariffs, ventilation and open-door events, hot-water draws, sensor faults and equipment outages |
 
-On first start, the live bench uses the existing TOML house. Apply the example from **Configure** to run the expanded model. The applied project takes precedence over the TOML house on later starts and is stored in the `simulator-config` volume.
+On first start without an override, the live bench uses the bundled TOML house. The applied project takes precedence on later starts and is stored in the `simulator-config` volume.
+
+An indoor split with `heat_pump_tariff` enabled uses a separate meter. Set `heat_pump_price` in each weather period in the same units as the ordinary electricity rate. The heat-pump meter includes compressor, indoor fan and defrost electricity. House PV offsets only ordinary household demand. The meters report separately in Live and via MQTT.
 
 The solar position calculation uses the [NOAA fractional-year approximation](https://gml.noaa.gov/grad/solcalc/solareqns.PDF). These are generic simulation presets. The room fabric and water tanks use lumped thermal states, with conductances derived from configured assemblies. The model uses simplified flow allocation, shading and equipment curves. It has yet to be calibrated against a measured building.
 

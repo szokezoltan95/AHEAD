@@ -59,13 +59,15 @@ PRESETS = {
                            "width_m": 1.0, "height_m": 0.6, "flow_l_min": 5.0, "travel_s": 90.0},
         "column_radiator": {"room": "", "circuit": "", "rated_kw": 1.3, "rated_delta_k": 50.0,
                             "width_m": 0.8, "height_m": 0.6, "flow_l_min": 4.0, "travel_s": 90.0},
+        "towel_radiator": {"room": "", "circuit": "", "rated_kw": 0.6, "rated_delta_k": 50.0,
+                            "width_m": 0.5, "height_m": 1.2, "flow_l_min": 2.5, "travel_s": 90.0},
         "underfloor": {"room": "", "circuit": "", "area_m2": 15.0, "pipe_spacing_m": 0.15,
                        "loop_length_m": 100.0, "flow_l_min": 2.0, "slab_depth_m": 0.06,
                        "finish_r_m2k_w": 0.04, "travel_s": 120.0},
     },
     "sources": {
         "gas_on_off": {"circuit": "", "capacity_kw": 12.0, "efficiency": 0.86,
-                       "min_on_s": 120.0, "min_off_s": 180.0, "dhw_circuit": ""},
+                       "min_on_s": 120.0, "min_off_s": 180.0, "dhw_circuit": "", "water_hysteresis_c": 0.0},
         "gas_modulating": {"circuit": "", "capacity_kw": 16.0, "efficiency": 0.93,
                            "minimum_fraction": 0.22, "min_on_s": 120.0, "min_off_s": 180.0,
                            "water_setpoint_control": True, "dhw_circuit": ""},
@@ -75,7 +77,7 @@ PRESETS = {
                          "dhw_circuit": ""},
         "indoor_split": {"room": "", "outdoor_unit": "", "capacity_kw": 2.5, "reversible": True,
                          "room_setpoint_control": True, "fan_control": True, "indoor_fan_kw": 0.045,
-                         "report_indoor_humidity": False, "humidity_setpoint_control": False},
+                         "report_indoor_humidity": False, "humidity_setpoint_control": False, "heat_pump_tariff": False},
     },
     "outdoor_units": {
         "split": {"capacity_kw": 3.5, "cop": 3.4, "cop_per_outdoor_k": 0.08,
@@ -94,7 +96,7 @@ PRESETS = {
     },
     "weather": {"period": {"start_s": 0, "outdoor_c": 0.0, "forecast_outdoor_c": 0.0,
                            "outdoor_humidity_pct": 75.0, "direct_kw_m2": 0.45, "diffuse_kw_m2": 0.10, "occupancy_kw": 0.25,
-                           "appliance_kw": 0.25, "electricity_price": 0.24, "gas_price": 0.09}},
+                           "appliance_kw": 0.25, "electricity_price": 0.24, "gas_price": 0.09, "heat_pump_price": -1.0}},
     "events": {
         "window_open": {"start_s": 3600, "duration_s": 600, "room": "", "extra_ach": 2.0},
         "extractor_on": {"start_s": 3600, "duration_s": 600, "room": "", "extra_ach": 1.5},
@@ -110,11 +112,15 @@ PRESETS = {
 for preset in PRESETS["rooms"].values():
     preset["expose_sensor"] = True
     preset["initial_humidity_pct"] = 50.0
+    preset["floor_offset_m"] = 0.0
 for name, preset in PRESETS["emitters"].items():
     preset["local_sensor_warming_c"] = 1.5 if name != "underfloor" else 0.0
     preset["local_sensor_bias_c"] = 0.0
     preset["report_valve_opening"] = False
+    preset["fixed_open"] = False
 for name, preset in PRESETS["sources"].items():
     preset["report_heat"] = name in {"gas_modulating", "air_to_water"}
+    if name != "indoor_split":
+        preset["automatic_heat_calls"] = True
 for preset in PRESETS["circuits"].values():
     preset["expose_sensors"] = True

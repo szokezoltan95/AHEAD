@@ -10,6 +10,9 @@ from ahead.simulator.presets import PRESETS
 
 WALL_TYPES = {
     "insulated_brick": (("brick", 0.25), ("eps", 0.15)),
+    "insulated_masonry_350": (("brick", 0.35), ("eps", 0.15)),
+    "insulated_masonry_300": (("brick", 0.30), ("eps", 0.15)),
+    "insulated_concrete_footing": (("concrete", 0.45), ("xps", 0.10)),
     "solid_brick": (("brick", 0.25),),
     "insulated_block": (("block", 0.25), ("mineral_wool", 0.15)),
     "partition": (("brick", 0.12),),
@@ -91,6 +94,12 @@ def _surface(rows, name, preset, material, **values):
         }
 
 
+def _vertical_extent(room, levels):
+    level = levels[room["level"]]
+    floor = level["elevation_m"] + _number(room["floor_offset_m"], "Room floor offset", -10, 10)
+    return floor, floor + (room["height_m"] or level["height_m"])
+
+
 def derive_envelope(plan, rows):
     layouts, rectangles = _floorplan_rooms(plan, rows)
     derived = {name for name, layout in layouts.items() if layout.get("derive")}
@@ -106,8 +115,8 @@ def derive_envelope(plan, rows):
     for name in sorted(derived):
         layout = layouts[name]
         room = rows["rooms"][name]
-        level = rows["levels"][room["level"]]
-        room_height = room["height_m"] or level["height_m"]
+        floor, ceiling = _vertical_extent(room, rows["levels"])
+        room_height = ceiling - floor
         walls = layout.get("walls", {})
         if not isinstance(walls, dict) or walls.keys() - PLAN_SIDES.keys():
             raise ValueError(f"Invalid wall settings for {name}")
@@ -137,22 +146,27 @@ def derive_envelope(plan, rows):
             if not isinstance(windows, list) or len(windows) > 50:
                 raise ValueError(f"Invalid openings on {name}'s {side} wall")
             for index, (first, last, other) in enumerate(spans):
-                skip_shared = other in derived and other < name
-                material = "partition" if other else wall.get("construction", "insulated_brick")
-                if material not in WALL_TYPES:
-                    raise ValueError(f"Unknown wall construction for {name}")
-                neighbour_height = room_height
-                if other:
-                    neighbour_height = rows["rooms"][other]["height_m"] or level["height_m"]
-                shared_height = min(room_height, neighbour_height)
                 surface = f"plan_{name}_{side}_{index + 1}"
-                if not skip_shared:
-                    _surface(rows, surface, "wall", material, room=name, adjacent_room=other or "",
-                             boundary="room" if other else "outdoors",
-                             area_m2=(last - first) * shared_height, azimuth_deg=azimuth)
-                if room_height > shared_height:
-                    _surface(rows, surface + "_upper", "wall", "insulated_brick", room=name,
-                             area_m2=(last - first) * (room_height - shared_height), azimuth_deg=azimuth)
+                construction = wall.get("construction", "insulated_brick")
+                if construction not in WALL_TYPES:
+                    raise ValueError(f"Unknown wall construction for {name}")
+                burial = _number(wall.get("ground_height_m", 0), "Buried wall height", 0, room_height)
+                width = last - first
+                overlap = 0.0
+                if other:
+                    other_floor, other_ceiling = _vertical_extent(rows["rooms"][other], rows["levels"])
+                    overlap = max(0, min(ceiling, other_ceiling) - max(floor, other_floor))
+                    if overlap > TOLERANCE and not (other in derived and other < name):
+                        _surface(rows, surface, "wall", "partition", room=name, adjacent_room=other,
+                                 boundary="room", area_m2=width * overlap, azimuth_deg=azimuth)
+                outside = room_height - overlap
+                buried = min(burial, outside)
+                if buried > TOLERANCE:
+                    _surface(rows, surface + "_ground", "wall", construction, room=name,
+                             boundary="ground", area_m2=width * buried, azimuth_deg=azimuth)
+                if outside - buried > TOLERANCE:
+                    _surface(rows, surface + "_exposed" if other else surface, "wall", construction,
+                             room=name, area_m2=width * (outside - buried), azimuth_deg=azimuth)
             occupied = []
             for index, opening in enumerate(windows):
                 if not isinstance(opening, dict):
@@ -170,7 +184,10 @@ def derive_envelope(plan, rows):
                     raise ValueError(f"Openings overlap on {name}'s {side} wall")
                 occupied.append((left, right))
                 for span, (first, last, other) in enumerate(spans):
-                    if not other and first <= left + TOLERANCE and right <= last + TOLERANCE:
+                    surface = f"plan_{name}_{side}_{span + 1}"
+                    if (not other and surface in rows["surfaces"]
+                            and first <= left + TOLERANCE and right <= last + TOLERANCE
+                            and height <= room_height - wall.get("ground_height_m", 0) + TOLERANCE):
                         key = f"plan_{name}_{side}_opening_{index + 1}"
                         rows["windows"][key] = PRESETS["windows"][preset] | {
                             "preset": preset, "surface": f"plan_{name}_{side}_{span + 1}",
@@ -186,9 +203,7 @@ def derive_envelope(plan, rows):
 def _horizontal_surfaces(derived, rectangles, rows):
     for name in sorted(derived):
         room = rows["rooms"][name]
-        level = rows["levels"][room["level"]]
-        floor = level["elevation_m"]
-        ceiling = floor + (room["height_m"] or level["height_m"])
+        floor, ceiling = _vertical_extent(room, rows["levels"])
         x, y, width, height = rectangles[name]
         for preset, elevation in (("floor", floor), ("ceiling", ceiling)):
             if any(row["room"] == name and row["preset"] in (
@@ -200,9 +215,7 @@ def _horizontal_surfaces(derived, rectangles, rows):
                 if other == name:
                     continue
                 adjacent = rows["rooms"][other]
-                adjacent_level = rows["levels"][adjacent["level"]]
-                other_floor = adjacent_level["elevation_m"]
-                other_ceiling = other_floor + (adjacent["height_m"] or adjacent_level["height_m"])
+                other_floor, other_ceiling = _vertical_extent(adjacent, rows["levels"])
                 if not _same(elevation, other_ceiling if preset == "floor" else other_floor):
                     continue
                 area = max(0, min(x + width, ox + ow) - max(x, ox)) * max(0, min(y + height, oy + oh) - max(y, oy))

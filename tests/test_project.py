@@ -47,6 +47,26 @@ class ProjectTests(unittest.TestCase):
         self.assertLess(house.source_heat_kw["living_room_heat_pump"], 0)
         self.assertEqual(house.source_heat_kw["bedroom_indoor"], 0)
 
+    def test_heat_pump_meter_accounts_for_defrost_and_isolated_pv(self):
+        project = example()
+        for source in project["sources"]:
+            if source["preset"] == "indoor_split":
+                source["heat_pump_tariff"] = True
+        project["outdoor_units"][0].update(defrost_period_s=10, defrost_duration_s=3)
+        scenario, _ = compile_project(project)
+        house = scenario.house
+        house.elapsed_s = 8
+        house.advance(1, Conditions(0, appliance_kw=.4, solar_pv_kw=1,
+                                    electricity_price_kwh=.3, heat_pump_price_kwh=.12),
+                      ControlPlan({"living_room_heat_pump": 1}, {}),
+                      frozenset({"living_room_heat_pump"}))
+        totals = house.totals
+        self.assertAlmostEqual(totals.house_electricity_kwh, .4 / 3600)
+        self.assertAlmostEqual(totals.heat_pump_electricity_kwh, .8 / 3600)
+        self.assertAlmostEqual(totals.import_kwh, .8 / 3600)
+        self.assertAlmostEqual(totals.export_kwh, .6 / 3600)
+        self.assertAlmostEqual(totals.cost, .8 * .12 / 3600)
+
     def test_underfloor_valve_moves_gradually_and_heats_slab(self):
         scenario, _ = compile_project(example())
         house = scenario.house

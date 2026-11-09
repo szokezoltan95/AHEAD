@@ -14,11 +14,12 @@ from ahead.simulator.project import SETTINGS, compile_project, prepare_project, 
 
 
 class Console:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, default_project: dict | None = None):
         self.path = path
         self.lock = Lock()
         self.changed = Event()
-        self.example = json.loads(files(__package__).joinpath("example.json").read_text("utf-8"))
+        self.example = (default_project if default_project is not None
+                        else json.loads(files(__package__).joinpath("example.json").read_text("utf-8")))
         self.draft = self.example
         self.applied = None
         self.pending = None
@@ -127,7 +128,8 @@ class Console:
                         "reported_outdoor_c": sample.observation.outdoor_c,
                         "forecast_outdoor_c": sample.observation.forecast_outdoor_c,
                         "electricity_price": sample.observation.electricity_price_kwh,
-                        "gas_price": sample.observation.gas_price_kwh},
+                        "gas_price": sample.observation.gas_price_kwh,
+                        "heat_pump_price": sample.observation.heat_pump_price_kwh},
             "active_faults": [
                 asdict(fault) for fault in scenario.faults if fault.active(sample.start_s)
             ],

@@ -1,4 +1,6 @@
 from dataclasses import replace
+from importlib.resources import files
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -8,6 +10,7 @@ from ahead.control import Observation
 from ahead.simulator.climate import ClimateControls
 from ahead.simulator.house import Conditions
 from ahead.simulator.moisture import humidity_ratio
+from ahead.simulator.project import compile_project
 from ahead.simulator.scenario import load_scenario
 
 try:
@@ -149,3 +152,31 @@ class ClimateMqttTests(unittest.TestCase):
         client.publish.assert_any_call(f"ahead/test/climate/ac_{PUMP}/action/state", "fan", retain=True)
         topics = [call.args[0] for call in client.publish.call_args_list]
         self.assertFalse(any("overshoot" in topic or "/opening/" in topic for topic in topics))
+
+    def test_manual_boiler_and_fixed_open_radiator(self):
+        project = json.loads(files("ahead.simulator").joinpath("example.json").read_text())
+        project["emitters"][0]["fixed_open"] = True
+        project["sources"][0].update(automatic_heat_calls=False, capacity_kw=24,
+                                     water_hysteresis_c=6)
+        project["sources"][1]["automatic_heat_calls"] = False
+        scenario, _ = compile_project(project)
+        scenario = replace(scenario, step_s=1)
+        bridge = MqttHouse(scenario, "test", "homeassistant")
+        self.assertNotIn("trv_living", bridge.remote_devices)
+        self.assertNotIn("automatic_heat_calls", bridge.discovery()["components"])
+        self.assertEqual(bridge.remote_devices["hydronic_gas_boiler"]["fields"]["mode"]["options"],
+                         ["off", "on"])
+        with self.assertRaises(ValueError):
+            bridge.remote_command("hydronic_gas_boiler", "mode", "auto")
+        bridge.remote_command("trv_kitchen", "mode", "heat")
+        bridge.remote_command("trv_kitchen", "target", 26)
+        samples = scenario.run(bridge, continuous=True)
+        next(samples)
+        self.assertEqual(scenario.house.source_heat_kw["gas_boiler"], 0)
+        self.assertEqual(scenario.house.hydronics.details["living"]["opening"], 1)
+        bridge.remote_command("hydronic_gas_boiler", "mode", "on")
+        next(samples)
+        self.assertEqual(scenario.house.source_heat_kw["gas_boiler"], 24)
+        bridge.remote_command("hydronic_gas_boiler", "mode", "off")
+        next(samples)
+        self.assertEqual(scenario.house.source_heat_kw["gas_boiler"], 0)

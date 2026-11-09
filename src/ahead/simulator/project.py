@@ -217,7 +217,7 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
             room_conductance = area / (0.12 + row["finish_r_m2k_w"]) / 1000
             emitters[name] = Emitter(room, circuit, pipe_conductance, row["flow_l_min"],
                                      slab_capacity, room_conductance, row["travel_s"], row["local_sensor_warming_c"],
-                                     row["local_sensor_bias_c"], row["report_valve_opening"])
+                                     row["local_sensor_bias_c"], row["report_valve_opening"], row["fixed_open"])
         else:
             _positive(row["rated_kw"], row["rated_delta_k"], row["width_m"], row["height_m"])
             # Scale the generic rating from the preset's reference size.
@@ -227,7 +227,7 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
             emitters[name] = Emitter(room, circuit, output / row["rated_delta_k"], row["flow_l_min"],
                                      travel_s=row["travel_s"], local_sensor_warming_c=row["local_sensor_warming_c"],
                                      local_sensor_bias_c=row["local_sensor_bias_c"],
-                                     report_valve_opening=row["report_valve_opening"])
+                                     report_valve_opening=row["report_valve_opening"], fixed_open=row["fixed_open"])
 
     outdoor_units = {}
     for name, row in rows["outdoor_units"].items():
@@ -245,7 +245,8 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
                                   room_setpoint_control=row["room_setpoint_control"],
                                   fan_control=row["fan_control"], report_heat=row["report_heat"],
                                   indoor_fan_kw=row["indoor_fan_kw"], report_indoor_humidity=row["report_indoor_humidity"],
-                                  humidity_setpoint_control=row["humidity_setpoint_control"]))
+                                  humidity_setpoint_control=row["humidity_setpoint_control"],
+                                  heat_pump_tariff=row["heat_pump_tariff"]))
         elif preset == "air_to_water":
             sources.append(Source(
                 name, "electricity", row["capacity_kw"], row["cop"], modulating=True,
@@ -254,14 +255,17 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
                 efficiency_per_water_k=row["cop_per_water_k"],
                 water_setpoint_control=row["water_setpoint_control"],
                 dhw_loop=row["dhw_circuit"] or None, report_heat=row["report_heat"],
+                automatic_heat_calls=row["automatic_heat_calls"],
             ))
         else:
             sources.append(Source(
                 name, "gas", row["capacity_kw"], row["efficiency"], modulating=preset == "gas_modulating",
                 min_on_s=row["min_on_s"], min_off_s=row["min_off_s"],
                 loop=_reference(row, "circuit", loops), min_fraction=row.get("minimum_fraction", 0),
+                water_hysteresis_c=row.get("water_hysteresis_c", 0),
                 water_setpoint_control=row.get("water_setpoint_control", False),
                 dhw_loop=row["dhw_circuit"] or None, report_heat=row["report_heat"],
+                automatic_heat_calls=row["automatic_heat_calls"],
             ))
     exchangers = {
         name: HeatExchanger(_reference(row, "from_circuit", loops), _reference(row, "to_circuit", loops),
@@ -292,12 +296,15 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
     times = [row["start_s"] for row in weather]
     if not times or times[0] != 0 or len(times) != len(set(times)) or (period and times[-1] >= period):
         raise ValueError("Weather must start at zero with unique times inside its repeat period")
+    if any(row["heat_pump_price"] < 0 and row["heat_pump_price"] != -1 for row in weather):
+        raise ValueError("Heat pump price must be non-negative or -1 to use the ordinary rate")
     profile = tuple(
         (row["start_s"], Conditions(
             row["outdoor_c"], occupied_gains_kw=row["occupancy_kw"], appliance_kw=row["appliance_kw"],
             electricity_price_kwh=row["electricity_price"], gas_price_kwh=row["gas_price"],
             forecast_outdoor_c=row["forecast_outdoor_c"], ground_c=settings["ground_c"],
             outdoor_humidity_pct=row["outdoor_humidity_pct"],
+            heat_pump_price_kwh=row["heat_pump_price"] if row["heat_pump_price"] >= 0 else None,
         )) for row in weather
     )
     if any(row[key] < 0 for row in weather

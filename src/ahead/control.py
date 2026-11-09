@@ -34,6 +34,7 @@ class Observation:
     gas_price_kwh: float | None = None
     forecast_outdoor_c: float | None = None
     indoor_humidity: Mapping[str, float] = field(default_factory=dict)
+    heat_pump_price_kwh: float | None = None
 
 
 @dataclass(frozen=True)
