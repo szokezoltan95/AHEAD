@@ -330,16 +330,22 @@ function drawHeatAirCells(state, plan, rooms, floor) {
     svgCanvas.querySelectorAll(".air-cell, .heat-arrow").forEach(node=>node.remove());
     if (!heatmapEnabled) return;
     const layer = svg("g",{class:"heat-overlay"});
-    const active = Object.values(state.sources||{}).filter(s=>s.heat_kw>0.05);
     for (const [name,position] of Object.entries(plan.rooms||{})) {
         const room=rooms[name], reading=state.rooms?.[name];
         if(!room||room.level!==floor||!reading)continue;
+        const emitters=Object.entries(state.emitters||{}).filter(([,e])=>e.zone===name&&(e.room_heat_kw||0)>.03);
+        const anchoredDevices=[...emitters.map(([id])=>id),...Object.entries(state.sources||{})
+            .filter(([,source])=>source.zone===name&&(source.heat_kw||0)>.03).map(([id])=>id)];
+        const anchors=anchoredDevices.map(id=>Object.values(plan.nodes||{}).find(n=>n.equipment===id&&n.level===floor))
+            .filter(Boolean);
         const heating=(reading.emitters_kw||0)+(reading.direct_heat_kw||0);
         const n=7, cellW=room.length_m/n,cellH=room.width_m/n;
         const gx=position.x+room.length_m*.5,gy=position.y+room.width_m*.5;
         for(let y=0;y<n;y++)for(let x=0;x<n;x++){
-            const distance=Math.hypot((x+.5)/n-.5,(y+.5)/n-.5);
-            const warm=heating>0.03?Math.max(0,1-distance*1.5):0;
+            const cx=position.x+(x+.5)*cellW,cy=position.y+(y+.5)*cellH;
+            const distance=anchors.length?Math.min(...anchors.map(a=>Math.hypot(cx-a.x,cy-a.y))):
+                Math.hypot((x+.5)/n-.5,(y+.5)/n-.5)*Math.hypot(room.length_m,room.width_m);
+            const warm=heating>0.03?Math.exp(-distance/Math.max(.4,Math.min(room.length_m,room.width_m)*.32)):0;
             const ac=Object.values(state.sources||{}).some(a=>a.zone===name&&a.fan_kw>0);
             const cell=svg("rect",{x:(position.x+x*cellW)*PLAN_SCALE,y:(position.y+y*cellH)*PLAN_SCALE,
                 width:cellW*PLAN_SCALE,height:cellH*PLAN_SCALE,class:"air-cell"});
@@ -353,11 +359,20 @@ function drawHeatAirCells(state, plan, rooms, floor) {
             const arrow=svg("text",{x:gx*PLAN_SCALE,y:gy*PLAN_SCALE,class:"heat-arrow"});
             arrow.textContent="↑";layer.append(arrow);
         }
-        if ((reading.envelope_kw||0)<-.01) {
-            const loss=svg("text",{x:(position.x+.16)*PLAN_SCALE,
-                y:(position.y+room.width_m*.5)*PLAN_SCALE,class:"heat-arrow exterior-arrow"});
-            loss.textContent="←";layer.append(loss);
-        }
+    }
+    for (const surface of Object.values(state.surfaces||{})) {
+        if (surface.boundary!=="outdoors"||(surface.heat_into_room_kw||0)>=-.01)continue;
+        const room=rooms[surface.room],position=plan.rooms?.[surface.room];
+        if(!room||!position||room.level!==floor)continue;
+        const az=(surface.azimuth_deg||0)%360;
+        let x,y,arrow;
+        if(surface.tilt_deg<45){x=position.x+room.length_m/2;y=position.y+room.width_m/2;arrow="↑";}
+        else if(az<45||az>=315){x=position.x+room.length_m/2;y=position.y+.16;arrow="↑";}
+        else if(az<135){x=position.x+room.length_m-.16;y=position.y+room.width_m/2;arrow="→";}
+        else if(az<225){x=position.x+room.length_m/2;y=position.y+room.width_m-.16;arrow="↓";}
+        else{x=position.x+.16;y=position.y+room.width_m/2;arrow="←";}
+        const loss=svg("text",{x:x*PLAN_SCALE,y:y*PLAN_SCALE,class:"heat-arrow exterior-arrow"});
+        loss.textContent=arrow;layer.append(loss);
     }
     for(const link of state.heat_links||[]){
         if(!["airflow","radiation","conduction"].includes(link.kind)||Math.abs(link.kw)<.005)continue;
