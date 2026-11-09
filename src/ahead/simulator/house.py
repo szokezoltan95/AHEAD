@@ -5,7 +5,7 @@ between simulated nodes enters one node and leaves the other in the same step.
 """
 
 from dataclasses import dataclass, field
-from math import ceil, exp, isfinite
+from math import atan2, ceil, cos, exp, isfinite, radians, sin, sqrt
 from typing import Mapping
 
 from ahead.control import ControlPlan, Equipment, SourceCapabilities
@@ -19,7 +19,9 @@ AIR_CELL_SIZE_M = 0.5
 AIR_CELL_MIX_KW_K = 0.0009
 AIR_CELL_BUOYANCY_KW_K = 0.003
 AIR_CELL_FAN_MIX_KW_K = 0.008
-AIR_CELL_SOURCE_SIGMA_M = 0.35
+AIR_CELL_JET_KW_K = 0.04
+AIR_EMITTER_SOURCE_SIGMA_M = 0.35
+AIR_AC_SOURCE_SIGMA_M = 0.45
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,14 @@ class Source:
     pump_stop_c: float = 30.0
     pump_overrun_s: float = 180.0
     pump_kw: float = 0.06
+    vertical_swing_available: bool = True
+    horizontal_swing_available: bool = True
+    vertical_angle_deg: float = 30.0
+    horizontal_angle_deg: float = 0.0
+    vertical_swing_amplitude_deg: float = 25.0
+    horizontal_swing_amplitude_deg: float = 45.0
+    vertical_swing_period_s: float = 8.0
+    horizontal_swing_period_s: float = 12.0
 
 
 @dataclass(frozen=True)
@@ -205,20 +215,24 @@ class House:
         }
         positions = dict(air_source_positions or {})
         self._air_source_weights = {}
+        self._air_source_positions = {}
         for name, emitter in emitters.items():
             position = positions.get(name, (.5, .82, .18))
             if len(position) == 2:
                 position = (*position, .18)
+            self._air_source_positions[name] = position
             self._air_source_weights[name] = self._point_weights(
-                emitter.zone, *position)
+                emitter.zone, *position, sigma=AIR_EMITTER_SOURCE_SIGMA_M)
         for name, source in self.sources.items():
             if source.direct_zone is not None:
                 default = (.5, .5, .85) if source.outdoor_unit else (.5, .5, .18)
                 position = positions.get(name, default)
                 if len(position) == 2:
                     position = (*position, default[2])
+                self._air_source_positions[name] = position
                 self._air_source_weights[name] = self._point_weights(
-                    source.direct_zone, *position)
+                    source.direct_zone, *position,
+                    sigma=AIR_AC_SOURCE_SIGMA_M if source.outdoor_unit else AIR_EMITTER_SOURCE_SIGMA_M)
         self.outdoor_units = dict(outdoor_units or {})
         self.exchangers = dict(exchangers or {})
         self._exchanger_details = {}
@@ -298,6 +312,13 @@ class House:
         for source in sources:
             _check((source.max_heat_kw, source.efficiency), positive=True)
             _check((source.min_on_s, source.min_off_s, source.min_fraction, source.indoor_fan_kw))
+            _check((source.vertical_swing_period_s, source.horizontal_swing_period_s), positive=True)
+            _check((source.vertical_angle_deg, source.horizontal_angle_deg,
+                    source.vertical_swing_amplitude_deg, source.horizontal_swing_amplitude_deg))
+            if not (-60 <= source.vertical_angle_deg <= 75 and -90 <= source.horizontal_angle_deg <= 90
+                    and 0 <= source.vertical_swing_amplitude_deg <= 60
+                    and 0 <= source.horizontal_swing_amplitude_deg <= 90):
+                raise ValueError("A/C louver settings are out of range")
             _check((source.water_hysteresis_c,))
             if source.water_hysteresis_c and (source.modulating or source.direct_zone is not None):
                 raise ValueError("Water hysteresis requires an on/off hydronic source")
@@ -375,7 +396,7 @@ class House:
             tuple(AIR_CELL_FAN_MIX_KW_K * value for value in scale),
         )
 
-    def _point_weights(self, room: str, x: float, y: float, z: float) -> list[list[list[float]]]:
+    def _point_weights(self, room: str, x: float, y: float, z: float, *, sigma: float):
         dx, dy, dz = self._air_cell_size_m[room]
         nx, ny, nz = self._air_grid_shape[room]
         dims = (nx * dx, ny * dy, nz * dz)
@@ -389,12 +410,41 @@ class House:
                 for ix in range(nx):
                     center = ((ix + .5) * dx, (iy + .5) * dy, (iz + .5) * dz)
                     distance2 = sum((value - target) ** 2 for value, target in zip(center, point))
-                    value = exp(-distance2 / (2 * AIR_CELL_SOURCE_SIGMA_M**2))
+                    value = exp(-distance2 / (2 * sigma**2))
                     row.append(value)
                     total += value
                 layer.append(row)
             weights.append(layer)
         return [[[value / total for value in row] for row in layer] for layer in weights]
+
+    def _airflow_vector(self, room: str, source: str, horizontal_deg: float, vertical_deg: float):
+        dx, dy, dz = self._air_cell_size_m[room]
+        nx, ny, nz = self._air_grid_shape[room]
+        sx, sy, _ = self._air_source_positions[source]
+        forward_x, forward_y = nx * dx / 2 - sx * nx * dx, ny * dy / 2 - sy * ny * dy
+        yaw = atan2(forward_y, forward_x) + radians(horizontal_deg)
+        pitch = radians(vertical_deg)
+        return cos(pitch) * cos(yaw), cos(pitch) * sin(yaw), -sin(pitch)
+
+    def _air_jet_profile(self, room: str, source: str, vector):
+        dx, dy, dz = self._air_cell_size_m[room]
+        nx, ny, nz = self._air_grid_shape[room]
+        sx, sy, sz = self._air_source_positions[source]
+        origin = (sx * nx * dx, sy * ny * dy, sz * nz * dz)
+        profile = [[[0.0 for _ in range(nx)] for _ in range(ny)] for _ in range(nz)]
+        for iz in range(nz):
+            for iy in range(ny):
+                for ix in range(nx):
+                    relative = ((ix + .5) * dx - origin[0],
+                                (iy + .5) * dy - origin[1],
+                                (iz + .5) * dz - origin[2])
+                    along = sum(a * b for a, b in zip(relative, vector))
+                    if along < 0:
+                        continue
+                    distance2 = sum(value * value for value in relative) - along * along
+                    radius = .18 + .12 * along
+                    profile[iz][iy][ix] = exp(-distance2 / (2 * radius * radius)) * exp(-along / 6)
+        return profile
 
     def reset_run_clock(self) -> None:
         """Preserve thermal state while starting a new measurement window."""
@@ -554,6 +604,11 @@ class House:
         for name, fraction in plan.indoor_fans.items():
             if name not in self.sources or self.sources[name].direct_zone is None or not 0 <= fraction <= 1:
                 raise ValueError("Invalid indoor fan command")
+        for name, angles in plan.airflow_angles_deg.items():
+            if (name not in self.sources or self.sources[name].direct_zone is None or len(angles) != 2
+                    or not all(isfinite(value) for value in angles)
+                    or not -90 <= angles[0] <= 90 or not -60 <= angles[1] <= 75):
+                raise ValueError("Invalid A/C airflow direction")
         if plan.sources.keys() - self.sources.keys() or plan.valves.keys() - self.equipment.valves:
             raise ValueError("Control plan references an unknown actuator")
         for fraction in plan.valves.values():
@@ -585,11 +640,15 @@ class House:
         )
         fan_fraction = max(plan.indoor_fans.values(), default=0.0)
         if fan_fraction:
-            max_rate += max(
-                2 * sum(self._grid_conductances(name)[2]) * fan_fraction
-                / (zone.air_capacity / self._cell_count(name))
-                for name, zone in self.zones.items()
-            )
+            for room, zone in self.zones.items():
+                room_fans = [plan.indoor_fans.get(name, 0.0) for name, source in self.sources.items()
+                             if source.direct_zone == room]
+                if not room_fans:
+                    continue
+                cell_capacity = zone.air_capacity / self._cell_count(room)
+                mix_rate = 2 * sum(self._grid_conductances(room)[2]) * max(room_fans) / cell_capacity
+                jet_rate = 2 * AIR_CELL_JET_KW_K * sqrt(3) * sum(room_fans) / cell_capacity
+                max_rate = max(max_rate, self._max_rate + mix_rate + jet_rate)
         radiant_rates = dict.fromkeys(self.zones, 0.0)
         for (first, second), area in conditions.radiant_opening_m2.items():
             maximum_k = max(1, self._fabric[first]+273.15, self._fabric[second]+273.15)
@@ -641,6 +700,7 @@ class House:
             pump_enabled=pump_enabled
         )
         local_air_sources = {name: [] for name in self.zones}
+        fan_sources = {name: [] for name in self.zones}
         for emitter_name, detail in self.hydronics.details.items():
             delivered = detail["room_heat_kw"]
             if delivered:
@@ -817,6 +877,7 @@ class House:
                     )
                 if fan_kw > 0:
                     fan_mixing[zone] = max(fan_mixing[zone], fan)
+                    fan_sources[zone].append((name, fan))
             efficiency = source.efficiency + source.efficiency_per_outdoor_k * (
                 outdoor - source.reference_outdoor_c
             )
@@ -881,6 +942,34 @@ class House:
                             rising = max(0.0, lower - upper) * buoyancy[2]
                             transfer[iz][iy][ix] -= rising
                             transfer[iz + 1][iy][ix] += rising
+            for source_name, fan_fraction in fan_sources[name]:
+                horizontal_deg, vertical_deg = plan.airflow_angles_deg.get(
+                    source_name, (self.sources[source_name].horizontal_angle_deg,
+                                  self.sources[source_name].vertical_angle_deg))
+                vector = self._airflow_vector(name, source_name, horizontal_deg, vertical_deg)
+                profile = self._air_jet_profile(name, source_name, vector)
+                for iz in range(nz):
+                    for iy in range(ny):
+                        for ix in range(nx):
+                            for axis, next_index in ((0, (iz, iy, ix + 1)),
+                                                     (1, (iz, iy + 1, ix)),
+                                                     (2, (iz + 1, iy, ix))):
+                                if ((axis == 0 and ix + 1 >= nx)
+                                        or (axis == 1 and iy + 1 >= ny)
+                                        or (axis == 2 and iz + 1 >= nz)):
+                                    continue
+                                first = (iz, iy, ix)
+                                direction = vector[axis]
+                                if abs(direction) < 1e-6:
+                                    continue
+                                upstream, downstream = (first, next_index) if direction > 0 else (next_index, first)
+                                weight = (profile[upstream[0]][upstream[1]][upstream[2]]
+                                          + profile[downstream[0]][downstream[1]][downstream[2]]) / 2
+                                conductance = AIR_CELL_JET_KW_K * fan_fraction * abs(direction) * weight
+                                flow = (grid[upstream[0]][upstream[1]][upstream[2]]
+                                        - grid[downstream[0]][downstream[1]][downstream[2]]) * conductance
+                                transfer[upstream[0]][upstream[1]][upstream[2]] -= flow
+                                transfer[downstream[0]][downstream[1]][downstream[2]] += flow
             source_delta = [[[0.0 for _ in range(nx)] for _ in range(ny)] for _ in range(nz)]
             for heat_kw, weights in local_air_sources[name]:
                 for iz in range(nz):

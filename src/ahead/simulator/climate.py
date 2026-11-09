@@ -1,7 +1,7 @@
 """On-device TRV and indoor HVAC controls for the live simulator."""
 
 from dataclasses import dataclass
-from math import exp, isfinite
+from math import exp, isfinite, pi, sin
 
 from ahead.control import ControlPlan
 
@@ -26,6 +26,14 @@ class ClimateUnit:
     target: float
     modes: tuple
     fan_control: bool = False
+    vertical_swing_available: bool = False
+    horizontal_swing_available: bool = False
+    vertical_angle_deg: float = 30.0
+    horizontal_angle_deg: float = 0.0
+    vertical_swing_amplitude_deg: float = 25.0
+    horizontal_swing_amplitude_deg: float = 45.0
+    vertical_swing_period_s: float = 8.0
+    horizontal_swing_period_s: float = 12.0
     mode: str = "off"
     preset: str = "manual"
     fan: str = "auto"
@@ -43,13 +51,31 @@ class ClimateUnit:
     coast_until_s: float = 0
     coast_peak: float = float("-inf")
 
+    @property
+    def swing_modes(self):
+        modes = ["off"]
+        if self.vertical_swing_available:
+            modes.append("vertical")
+        if self.horizontal_swing_available:
+            modes.append("horizontal")
+        if self.vertical_swing_available and self.horizontal_swing_available:
+            modes.append("both")
+        return tuple(modes)
+
+    @property
+    def has_swing(self):
+        return self.vertical_swing_available or self.horizontal_swing_available
+
     def apply(self, field, payload, elapsed_s):
         value = payload.decode().strip()
         choices = {
             "mode": self.modes,
             "preset": ("none", *(TRV_PRESETS if self.kind == "trv" else AC_PRESETS)),
-            "fan": ("auto", *FAN_SPEEDS), "swing": ("off", "on"), "sensor_source": SENSOR_SOURCES,
+            "fan": ("auto", *FAN_SPEEDS), "swing": self.swing_modes, "sensor_source": SENSOR_SOURCES,
         }
+        if field == "swing" and value == "on":
+            value = "both" if "both" in self.swing_modes else next(
+                (mode for mode in self.swing_modes if mode != "off"), "off")
         if field in choices:
             if value not in choices[field]:
                 raise ValueError("Unsupported setting")
@@ -60,13 +86,18 @@ class ClimateUnit:
                 value = "manual"
             setattr(self, field, value)
             return
+        angle_fields = {"vertical_angle": ("vertical_angle_deg", -60, 75),
+                        "horizontal_angle": ("horizontal_angle_deg", -90, 90)}
         limits = {"target": (7, 35), "humidity_target": (35, 80)}
         limits.update({key: (low, high) for key, (_, low, high, _) in TRV_NUMBERS.items()})
+        limits.update({key: (low, high) for key, (_, low, high) in angle_fields.items()})
+        if field in angle_fields and self.kind != "ac":
+            raise ValueError("Louver settings are only available on A/C units")
         low, high = limits[field]
         number = float(value)
         if not isfinite(number) or not low <= number <= high:
             raise ValueError("Climate setting outside supported range")
-        setattr(self, field, number)
+        setattr(self, angle_fields[field][0] if field in angle_fields else field, number)
         if field == "external_temperature":
             self.external_time = elapsed_s
         if field == "target":
@@ -176,7 +207,15 @@ class ClimateControls:
                 if source.reversible:
                     modes += ("cool","auto","dry")
                 self.units[key] = ClimateUnit(key,"ac",name,source.direct_zone,
-                    self.target(source.direct_zone),modes,fan_control=source.fan_control,preset="none")
+                    self.target(source.direct_zone),modes,fan_control=source.fan_control,preset="none",
+                    vertical_swing_available=source.vertical_swing_available,
+                    horizontal_swing_available=source.horizontal_swing_available,
+                    vertical_angle_deg=source.vertical_angle_deg,
+                    horizontal_angle_deg=source.horizontal_angle_deg,
+                    vertical_swing_amplitude_deg=source.vertical_swing_amplitude_deg,
+                    horizontal_swing_amplitude_deg=source.horizontal_swing_amplitude_deg,
+                    vertical_swing_period_s=source.vertical_swing_period_s,
+                    horizontal_swing_period_s=source.horizontal_swing_period_s)
         self.commands = {
             self.topic(unit,field,"set"): (unit,field)
             for unit in self.units.values() for field in self.mqtt_fields(unit)
@@ -193,7 +232,9 @@ class ClimateControls:
             return ("mode", "target", "preset", "sensor_source", "external_temperature", "sensor_offset")
         fields = ("mode", "target")
         if unit.fan_control:
-            fields += ("preset", "fan", "swing")
+            fields += ("preset", "fan")
+        if unit.has_swing:
+            fields += ("swing",)
         return fields + (("humidity_target",) if self.house.sources[unit.name].humidity_setpoint_control
                          and "dry" in unit.modes else ())
 
@@ -214,7 +255,10 @@ class ClimateControls:
                     fields.pop("preset")
                 else:
                     fields["fan"] = {"label":"Fan speed","options":["auto",*FAN_SPEEDS]}
-                    fields["swing"] = {"label":"Swing","options":["off","on"]}
+                if unit.has_swing:
+                    fields["swing"] = {"label":"Louver swing","options":list(unit.swing_modes)}
+                fields["vertical_angle"] = {"label":"Vertical louver direction","min":-60,"max":75,"step":1,"unit":"°"}
+                fields["horizontal_angle"] = {"label":"Horizontal louver direction","min":-90,"max":90,"step":1,"unit":"°"}
                 if self.house.sources[unit.name].humidity_setpoint_control and "dry" in unit.modes:
                     fields["humidity_target"] = {"label":"Target humidity","min":35,"max":80,"step":1,"unit":"%"}
             catalog[unit.key] = {"group":"emitters" if unit.kind == "trv" else "sources",
@@ -225,9 +269,11 @@ class ClimateControls:
         paired = {"mode":"mode", "target":"temperature", "preset":"preset_mode"}
         if unit.kind == "ac":
             if unit.fan_control:
-                paired.update(fan="fan_mode",swing="swing_mode")
+                paired["fan"] = "fan_mode"
             else:
                 paired.pop("preset")
+            if unit.has_swing:
+                paired["swing"] = "swing_mode"
             if self.house.sources[unit.name].humidity_setpoint_control and "dry" in unit.modes:
                 paired["humidity_target"] = "target_humidity"
         climate = {
@@ -245,9 +291,11 @@ class ClimateControls:
         components = {unit.key:climate}
         if unit.kind == "ac":
             if unit.fan_control:
-                climate.update(fan_modes=["auto",*FAN_SPEEDS],swing_modes=["off","on"])
+                climate.update(fan_modes=["auto",*FAN_SPEEDS])
             else:
                 climate.pop("preset_modes")
+            if unit.has_swing:
+                climate["swing_modes"] = list(unit.swing_modes)
             if self.house.zones[unit.zone].expose_sensor and self.house.sources[unit.name].report_indoor_humidity:
                 climate["current_humidity_topic"] = self.topic(unit,"humidity")
             if "humidity_target" in paired:
@@ -280,6 +328,7 @@ class ClimateControls:
     def plan(self, observation, raw):
         sources, valves = {}, {}
         fans, dry, fan_only, stop = {}, set(), set(), set()
+        airflow_angles = {}
         states = {}
         calls = {}
         temperatures = self.house.indoor_c
@@ -310,8 +359,23 @@ class ClimateControls:
                         stop.add(unit.name)
                     if unit.mode == "dry":
                         dry.add(unit.name)
+                vertical_angle = unit.vertical_angle_deg
+                horizontal_angle = unit.horizontal_angle_deg
+                if unit.swing in ("vertical", "both"):
+                    vertical_angle += unit.vertical_swing_amplitude_deg * sin(
+                        2 * pi * observation.elapsed_s / unit.vertical_swing_period_s)
+                if unit.swing in ("horizontal", "both"):
+                    horizontal_angle += unit.horizontal_swing_amplitude_deg * sin(
+                        2 * pi * observation.elapsed_s / unit.horizontal_swing_period_s)
+                vertical_angle = max(-60, min(75, vertical_angle))
+                horizontal_angle = max(-90, min(90, horizontal_angle))
+                airflow_angles[unit.name] = (horizontal_angle, vertical_angle)
                 states[key] = {"control_c":temperature,"humidity_pct":humidity,"request":demand,
-                               "fan_fraction":fan,"override":manual,"swing":unit.swing}
+                               "fan_fraction":fan,"override":manual,"swing":unit.swing,
+                               "vertical_angle":unit.vertical_angle_deg,
+                               "horizontal_angle":unit.horizontal_angle_deg,
+                               "airflow_vertical_deg":vertical_angle,
+                               "airflow_horizontal_deg":horizontal_angle}
             states[key].update(mode=unit.mode,preset=unit.preset,target_c=unit.target,
                                humidity_target=unit.humidity_target,fan=unit.fan,
                                zone=unit.zone,kind=unit.kind,device=unit.name)
@@ -332,6 +396,7 @@ class ClimateControls:
             room_setpoints_c=raw["room_setpoint"], fan_fractions=raw["fan"],
             water_setpoints_c=raw["water_setpoint"], indoor_fans=fans, dry_sources=frozenset(dry),
             climate_states=states, fan_only_sources=frozenset(fan_only), stopped_sources=frozenset(stop),
+            airflow_angles_deg=airflow_angles,
         )
 
     def publish(self, client, sample):
@@ -356,9 +421,13 @@ class ClimateControls:
                 source = self.house.source_details.get(unit.name,{})
                 output = source.get("heat_kw",0)
                 if unit.fan_control:
-                    values.update(fan=state["fan"],swing=state["swing"])
+                    values["fan"] = state["fan"]
                 else:
                     values.pop("preset")
+                if unit.has_swing:
+                    values["swing"] = state["swing"]
+                values.update(vertical_angle=state["vertical_angle"],
+                              horizontal_angle=state["horizontal_angle"])
                 model = self.house.sources[unit.name]
                 if model.report_indoor_humidity and self.house.zones[unit.zone].expose_sensor:
                     values["humidity"] = state["humidity_pct"]

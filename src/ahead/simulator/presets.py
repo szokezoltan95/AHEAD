@@ -79,6 +79,10 @@ PRESETS = {
                          "dhw_circuit": ""},
         "indoor_split": {"room": "", "outdoor_unit": "", "capacity_kw": 2.5, "reversible": True,
                          "room_setpoint_control": True, "fan_control": True, "indoor_fan_kw": 0.045,
+                         "vertical_swing_available": True, "horizontal_swing_available": True,
+                         "vertical_angle_deg": 30.0, "horizontal_angle_deg": 0.0,
+                         "vertical_swing_amplitude_deg": 25.0, "horizontal_swing_amplitude_deg": 45.0,
+                         "vertical_swing_period_s": 8.0, "horizontal_swing_period_s": 12.0,
                          "report_indoor_humidity": False, "humidity_setpoint_control": False, "heat_pump_tariff": False},
     },
     "outdoor_units": {

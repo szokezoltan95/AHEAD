@@ -51,6 +51,7 @@ class ControlPlan:
     climate_states: Mapping[str, Mapping[str, float | str | bool | None]] = field(default_factory=dict)
     fan_only_sources: frozenset[str] = frozenset()
     stopped_sources: frozenset[str] = frozenset()
+    airflow_angles_deg: Mapping[str, tuple[float, float]] = field(default_factory=dict)
 
 
 class Controller(Protocol):

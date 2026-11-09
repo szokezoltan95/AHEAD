@@ -244,13 +244,26 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
         if preset == "indoor_split":
             room = _reference(row, "room", room_rows)
             unit = _reference(row, "outdoor_unit", outdoor_units)
+            _positive(row["vertical_swing_period_s"], row["horizontal_swing_period_s"])
+            if not -60 <= row["vertical_angle_deg"] <= 75 or not -90 <= row["horizontal_angle_deg"] <= 90:
+                raise ValueError(f"A/C louver direction is out of range for {name}")
+            if not 0 <= row["vertical_swing_amplitude_deg"] <= 60 or not 0 <= row["horizontal_swing_amplitude_deg"] <= 90:
+                raise ValueError(f"A/C swing amplitude is out of range for {name}")
             sources.append(Source(name, "electricity", row["capacity_kw"], 1, direct_zone=room,
                                   modulating=True, reversible=row["reversible"], outdoor_unit=unit,
                                   room_setpoint_control=row["room_setpoint_control"],
                                   fan_control=row["fan_control"], report_heat=row["report_heat"],
                                   indoor_fan_kw=row["indoor_fan_kw"], report_indoor_humidity=row["report_indoor_humidity"],
                                   humidity_setpoint_control=row["humidity_setpoint_control"],
-                                  heat_pump_tariff=row["heat_pump_tariff"]))
+                                  heat_pump_tariff=row["heat_pump_tariff"],
+                                  vertical_swing_available=row["vertical_swing_available"],
+                                  horizontal_swing_available=row["horizontal_swing_available"],
+                                  vertical_angle_deg=row["vertical_angle_deg"],
+                                  horizontal_angle_deg=row["horizontal_angle_deg"],
+                                  vertical_swing_amplitude_deg=row["vertical_swing_amplitude_deg"],
+                                  horizontal_swing_amplitude_deg=row["horizontal_swing_amplitude_deg"],
+                                  vertical_swing_period_s=row["vertical_swing_period_s"],
+                                  horizontal_swing_period_s=row["horizontal_swing_period_s"]))
         elif preset == "air_to_water":
             sources.append(Source(
                 name, "electricity", row["capacity_kw"], row["cop"], modulating=True,
