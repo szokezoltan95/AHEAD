@@ -44,8 +44,8 @@ services:
       - simulator
     networks: [web, lab]
     ports:
-      - "127.0.0.1:${AHEAD_HA_PORT:-8123}:8123"
-      - "127.0.0.1:${AHEAD_CONSOLE_PORT:-8765}:8765"
+      - "${AHEAD_HA_PORT:-8123}:8123"
+      - "${AHEAD_CONSOLE_PORT:-8765}:8765"
     volumes:
       - ./docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
 
