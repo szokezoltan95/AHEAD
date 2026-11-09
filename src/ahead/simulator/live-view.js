@@ -13,6 +13,7 @@ const readingUnits = {rooms:"°C", circuits:"°C", surfaces:"kW/m²", pipes:"L/m
 let liveState, liveFloor = "", liveFloorsKey = "", liveGeometryKey = "", inventoryKey = "";
 let livePlanItems = [], liveEquipmentCards = [];
 let heatmapEnabled = true;
+let liveAirSliceM = 0.8;
 
 function withUnit(value,unit) {
     return Number.isFinite(value) ? `${format(value)} ${unit}` : "—";
@@ -165,6 +166,11 @@ for (const [id,className] of [
 $("live-heatmap-toggle").onclick = () => {
     heatmapEnabled = !heatmapEnabled;
     $("live-heatmap-toggle").setAttribute("aria-pressed",heatmapEnabled);
+    drawLivePlan(liveState);
+};
+$("live-air-slice").oninput = event => {
+    liveAirSliceM = Number(event.target.value);
+    $("live-air-slice-value").textContent = `${liveAirSliceM.toFixed(1)} m`;
     drawLivePlan(liveState);
 };
 $("live-overview").onclick = () => selectLive("","",false);
@@ -330,16 +336,31 @@ function drawHeatAirCells(state, plan, rooms, floor) {
     svgCanvas.querySelectorAll(".air-cell, .heat-arrow").forEach(node=>node.remove());
     if (!heatmapEnabled) return;
     const layer = svg("g",{class:"heat-overlay"});
+    const levels=state.configured_objects?.levels||{};
+    const floorRooms=Object.entries(plan.rooms||{}).filter(([name,position])=>
+        rooms[name]?.level===floor);
+    const maxHeight=Math.max(0.5,...floorRooms.map(([name])=>
+        rooms[name]?.height_m||levels[rooms[name]?.level]?.height_m||2.7));
+    const sliceInput=$("live-air-slice");
+    sliceInput.max=maxHeight.toFixed(1);
+    liveAirSliceM=Math.min(liveAirSliceM,maxHeight);
+    sliceInput.value=liveAirSliceM;
+    $("live-air-slice-value").textContent=`${liveAirSliceM.toFixed(1)} m`;
     for (const [name,position] of Object.entries(plan.rooms||{})) {
         const room=rooms[name], reading=state.rooms?.[name];
         if(!room||room.level!==floor||!reading)continue;
         const heating=(reading.emitters_kw||0)+(reading.direct_heat_kw||0);
-        const n=7, cellW=room.length_m/n,cellH=room.width_m/n;
+        const [nx,ny]=reading.air_grid?.shape||[7,7];
+        const cellW=room.length_m/nx,cellH=room.width_m/ny;
+        const heights=reading.air_grid?.z_centers_m||[0.8];
+        const iz=heights.reduce((best,height,index)=>
+            Math.abs(height-liveAirSliceM)<Math.abs(heights[best]-liveAirSliceM)?index:best,0);
+        const slice=reading.air_cells_c?.[iz]||reading.air_cells_c?.[0]||[];
         const gx=position.x+room.length_m*.5,gy=position.y+room.width_m*.5;
-        for(let y=0;y<n;y++)for(let x=0;x<n;x++){
+        for(let y=0;y<ny;y++)for(let x=0;x<nx;x++){
             const cell=svg("rect",{x:(position.x+x*cellW)*PLAN_SCALE,y:(position.y+y*cellH)*PLAN_SCALE,
                 width:cellW*PLAN_SCALE,height:cellH*PLAN_SCALE,class:"air-cell"});
-            const temp=reading.air_cells_c?.[y]?.[x] ?? reading.air_c;
+            const temp=slice?.[y]?.[x] ?? reading.air_c;
             cell.style.fill=`hsl(${Math.max(0,210-(temp-16)*13)} 78% 58% / .28)`;
             const tooltip=svg("title");tooltip.textContent=`${name.replaceAll("_"," ")} · ${temp.toFixed(1)} °C`;
             cell.append(tooltip);

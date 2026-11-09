@@ -51,6 +51,9 @@
                 <button id="live-equipment-toggle" data-icon="radiator" aria-pressed="true">Equipment</button>
                 <button id="live-flow-toggle" data-icon="activity" aria-pressed="false">Flow labels</button>
                 <button id="live-heatmap-toggle" data-icon="activity" aria-pressed="true">Air temperature grid</button>
+                <label class="air-slice-control" for="live-air-slice">Height <span id="live-air-slice-value">0.8 m</span>
+                    <input id="live-air-slice" type="range" min="0.1" max="2.7" step="0.1" value="0.8">
+                </label>
             </div>
             <svg class="plan-canvas" id="live-svg" aria-label="Live floor plan"></svg>
             <div class="live-legend" id="live-pipe-legend">

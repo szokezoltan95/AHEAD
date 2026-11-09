@@ -121,6 +121,7 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
         windows[surface].append(row)
 
     volume = {}
+    air_dimensions = {}
     envelope = defaultdict(float)
     ground = defaultdict(float)
     coupling = defaultdict(float)
@@ -132,6 +133,7 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
         height = row["height_m"] or level["height_m"]
         _positive(row["length_m"], row["width_m"], height)
         volume[name] = row["length_m"] * row["width_m"] * height
+        air_dimensions[name] = (row["length_m"], row["width_m"], height)
 
     for name, row in surfaces.items():
         room = _reference(row, "room", room_rows)
@@ -282,6 +284,8 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
     source_zones = {name: emitter.zone for name, emitter in emitters.items()}
     source_zones.update({source.name: source.direct_zone for source in sources if source.direct_zone})
     air_source_positions = {}
+    emitter_names = set(emitters)
+    source_names = {source.name: source for source in sources}
     for node in plan.get("nodes", {}).values():
         device, zone_name = node.get("equipment"), source_zones.get(node.get("equipment"))
         placement = plan.get("rooms", {}).get(zone_name)
@@ -291,10 +295,12 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
         air_source_positions[device] = (
             (node["x"] - placement["x"]) / room["length_m"],
             (node["y"] - placement["y"]) / room["width_m"],
+            .18 if device in emitter_names
+            else .85 if source_names[device].outdoor_unit else .18,
         )
     house = House(tuple(zones), tuple(partitions), tuple(sources), loops=loops, emitters=emitters,
                   outdoor_units=outdoor_units, exchangers=exchangers, pipe_network=pipe_network,
-                  air_source_positions=air_source_positions)
+                  air_source_positions=air_source_positions, room_dimensions_m=air_dimensions)
 
     for row in rows["solar"].values():
         face = _reference(row, "surface", surfaces)
