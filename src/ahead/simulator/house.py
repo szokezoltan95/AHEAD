@@ -70,6 +70,10 @@ class Source:
     automatic_heat_calls: bool = True
     water_hysteresis_c: float = 0
     heat_pump_tariff: bool = False
+    pump_start_c: float = 35.0
+    pump_stop_c: float = 30.0
+    pump_overrun_s: float = 180.0
+    pump_kw: float = 0.06
 
 
 @dataclass(frozen=True)
@@ -177,6 +181,9 @@ class House:
         self._balance = {}
         self._dhw_charging: dict[str, bool] = {}
         self._source_state = {name: _SourceState() for name in self.sources}
+        self._pump_overrun = {name: 0.0 for name, source in self.sources.items()
+                              if source.direct_zone is None and source.pump_kw > 0}
+        self._pump_enabled = {self.sources[name].loop: False for name in self._pump_overrun}
         self._source_heat_kw = dict.fromkeys(self.sources, 0.0)
         self.elapsed_s = 0.0
         self.totals = Totals()
@@ -302,6 +309,8 @@ class House:
         self.elapsed_s = 0.0
         self.totals = Totals()
         self._source_state = {name: _SourceState() for name in self.sources}
+        self._pump_overrun = {name: 0.0 for name, source in self.sources.items()
+                              if source.direct_zone is None and source.pump_kw > 0}
         self._source_heat_kw = dict.fromkeys(self.sources, 0.0)
         self.hydronics.valves = {name: float(emitter.fixed_open)
                                  for name, emitter in self.hydronics.emitters.items()}
@@ -455,7 +464,8 @@ class House:
             self.elapsed_s += step_s
             remaining_s -= step_s
         self.hydronics.exchange(self._air, plan.valves, 0, fabric=self._fabric,
-                                outdoor=conditions.outdoor_c, ground=conditions.ground_c)
+                                outdoor=conditions.outdoor_c, ground=conditions.ground_c,
+                                pump_enabled=self._pump_enabled)
 
     def _step(self, dt_h, conditions, plan, available_sources):
         air_flow = dict.fromkeys(self.zones, 0.0)
@@ -463,12 +473,32 @@ class House:
         moisture_flow = dict.fromkeys(self.zones, 0.0)
         dry_air_kg = {name: zone.air_capacity / AIR_KWH_KG_K for name, zone in self.zones.items()}
         outdoor_moisture = humidity_ratio(conditions.outdoor_c, conditions.outdoor_humidity_pct)
+        pump_enabled = {self.sources[name].loop: False for name in self._pump_overrun}
+        for name, remaining in self._pump_overrun.items():
+            source = self.sources[name]
+            water = self.hydronics.water[source.loop]
+            if self._source_state[name].on:
+                self._pump_overrun[name] = source.pump_overrun_s
+                pump_enabled[source.loop] = True
+            elif remaining > 0 and water > source.pump_stop_c:
+                self._pump_overrun[name] = max(0, remaining - dt_h * 3600)
+                pump_enabled[source.loop] = self._pump_overrun[name] > 0
+            elif water >= source.pump_start_c:
+                pump_enabled[source.loop] = True
+            else:
+                self._pump_overrun[name] = 0
+                pump_enabled[source.loop] = False
+        self._pump_enabled = pump_enabled
         water_flow, emitter_heat, slab_heat = self.hydronics.exchange(
             self._air, plan.valves, dt_h * 3600, fabric=self._fabric,
-            outdoor=conditions.outdoor_c, ground=conditions.ground_c
+            outdoor=conditions.outdoor_c, ground=conditions.ground_c,
+            pump_enabled=pump_enabled
         )
         electricity_kw = conditions.appliance_kw
         heat_pump_kw = 0.0
+        pump_kw = sum(self.sources[name].pump_kw for name in self._pump_overrun
+                      if pump_enabled.get(self.sources[name].loop, False))
+        electricity_kw += pump_kw
         gas_kw = heat_kw = 0.0
         outdoor = conditions.outdoor_c
         appliance_gains = (conditions.occupied_gains_kw + conditions.appliance_kw) / len(self.zones)
@@ -654,6 +684,8 @@ class House:
                 "fan_kw": fan_kw, "latent_cooling_kw": latent_kw, "sensible_heat_kw": sensible,
                 "starts": self._source_state[name].starts,
                 "heat_pump_tariff": source.heat_pump_tariff,
+                "pump_on": bool(source.direct_zone is None and pump_enabled.get(loop_name, False)),
+                "pump_kw": source.pump_kw if source.direct_zone is None and pump_enabled.get(loop_name, False) else 0,
             }
 
         for name, zone in self.zones.items():

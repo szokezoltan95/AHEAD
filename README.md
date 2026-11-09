@@ -38,7 +38,7 @@ Compose starts the simulator, an MQTT broker, Home Assistant Container, and a lo
 
 1. Open [Home Assistant](http://localhost:8123) and complete onboarding.
 2. In **Settings → Devices & services → Add integration**, select **MQTT**. Enter broker host `mqtt` and port `1883`. Leave the username and password blank. The broker is on the Compose network and its port is unpublished.
-3. Under **Settings → Devices & services → MQTT**, open a simulated device such as **Kitchen TRV**. Select **Heat** and set a temperature above the current reading. The TRV opens its valve. A source configured for automatic heat calls can respond to the request. Watch the valve, boiler output and supply temperature in the simulator.
+3. Under **Settings → Devices & services → MQTT**, open a simulated device such as **Kitchen TRV**. Select **Heat** and set a temperature above the current reading. The TRV opens its valve. A source configured for automatic heat calls can respond to the request. The boiler circulation pump starts with the burner, stops after a 3-minute overrun when water falls to 30 °C, and starts on water temperature above 35 °C. The pump draws 60 W while running. Watch the valve, boiler output and supply temperature in the simulator.
 
 ### Simulated climate controls
 
@@ -54,7 +54,7 @@ Set `AHEAD_SCENARIO` in the Compose `.env` file to load a TOML scenario or a flo
 
 ## Configure and monitor the house
 
-Open the [AHEAD simulator console](http://localhost:8765). Compose publishes the console on loopback. Set `AHEAD_CONSOLE_PORT` in `.env` to use a different host port.
+Open the [AHEAD simulator console](http://localhost:8765). The **History** page graphs room temperature and humidity, radiator opening, boiler and A/C output, pump state, and water temperatures. It retains up to seven days of one-minute samples while the simulator process runs. Compose publishes the console on loopback. Set `AHEAD_CONSOLE_PORT` in `.env` to use a different host port.
 
 - **Live** shows selectable water circuits as a piping schematic, with separate supply and return lines, junctions, and flow-direction arrows. Switch to **Floor plan** for room temperatures and positioned equipment, or **Heat flow** for directional transfers in watts. The equipment list includes devices without a floor-plan position. Inspect each component's live readings and recent trends, and the underlying JSON at `/api/live`. Local device commands also accept JSON with `device`, `field`, and `value` at `POST /api/remote`. Room air and fabric temperatures, valve positions and flow, water and slab temperatures, requested and actual heat output, sensor faults, and the heat and electrical balances are visible independently of MQTT.
 - **Configure** opens with an editable six-room example. Draw rooms on the floor plan, click wall edges to set construction and openings, and place radiators and other equipment. Use **Advanced configuration** for detailed parameters. Choose **Save draft** or **Apply and restart simulation**. Applying validates links, optionally warms up the house, stores the starting thermal checkpoint, and begins a new live run. You can import and export project JSON. After applying, use the refreshed virtual devices in Home Assistant. A reversible indoor unit also retains its raw signed request control for experiments.

@@ -216,3 +216,8 @@ dialog .toolbar { margin-bottom: 0; }
 #live-remote-status { margin: .65rem 0 0; }
 
 .live-metric[hidden] { display: none; }
+
+#history-chart {width:100%;height:auto;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
+.air-cell {pointer-events:none;stroke:none}
+.heat-arrow {fill:#e97843;font-size:24px;font-weight:800;pointer-events:none}
+.interroom-arrow {fill:#9d55c7}

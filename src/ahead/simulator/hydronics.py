@@ -77,7 +77,7 @@ class Hydronics:
             if emitter.slab_capacity:
                 yield (emitter.kw_k + emitter.slab_to_room_kw_k) / emitter.slab_capacity
 
-    def exchange(self, air, valves, dt_s, *, fabric=None, outdoor=0, ground=0):
+    def exchange(self, air, valves, dt_s, *, fabric=None, outdoor=0, ground=0, pump_enabled=None):
         water_heat = dict.fromkeys(self.loops, 0.0)
         room_heat = dict.fromkeys(air, 0.0)
         slab_heat = {}
@@ -93,11 +93,12 @@ class Hydronics:
                 self.valves[name] += max(-maximum_move, min(maximum_move, difference))
             else:
                 self.valves[name] = request
+        pump_enabled = pump_enabled or {}
         for loop_name, loop in self.loops.items():
             supply = self.water[loop_name]
             names = self._by_loop[loop_name]
             requested_flow = sum(self.emitters[name].flow_l_min * self.valves[name] for name in names)
-            flow = min(requested_flow, loop.max_flow_l_min)
+            flow = min(requested_flow, loop.max_flow_l_min) if pump_enabled.get(loop_name, True) else 0.0
             scale = flow / requested_flow if requested_flow else 0
             flows = {name: self.valves[name] * self.emitters[name].flow_l_min * scale for name in names}
             pipe_frame = None
@@ -146,7 +147,7 @@ class Hydronics:
                 "return_c": supply + water_heat[loop_name] / (
                     flow * WATER_KW_PER_K_PER_L_MIN
                 ) if flow else None,
-                "flow_l_min": flow,
+                "flow_l_min": flow, "pump_on": bool(flow and pump_enabled.get(loop_name, True)),
             }
         return water_heat, room_heat, slab_heat
 

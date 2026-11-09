@@ -67,7 +67,7 @@ PRESETS = {
     },
     "sources": {
         "gas_on_off": {"circuit": "", "capacity_kw": 12.0, "efficiency": 0.86,
-                       "min_on_s": 120.0, "min_off_s": 180.0, "dhw_circuit": "", "water_hysteresis_c": 0.0},
+                       "min_on_s": 120.0, "min_off_s": 180.0, "dhw_circuit": "", "water_hysteresis_c": 0.0, "pump_start_c": 35.0, "pump_stop_c": 30.0, "pump_overrun_s": 180.0, "pump_kw": 0.06},
         "gas_modulating": {"circuit": "", "capacity_kw": 16.0, "efficiency": 0.93,
                            "minimum_fraction": 0.22, "min_on_s": 120.0, "min_off_s": 180.0,
                            "water_setpoint_control": True, "dhw_circuit": ""},

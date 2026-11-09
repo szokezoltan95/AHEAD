@@ -8,6 +8,7 @@
 <nav>
 <button id="show-live" data-icon="activity" aria-pressed="true">Live</button>
 <button id="show-config" data-icon="plan" aria-pressed="false">Configure</button>
+<button id="show-history" data-icon="activity" aria-pressed="false">History</button>
 </nav>
 <main id="live">
 <div class="live-heading">
@@ -80,6 +81,12 @@
 <details><summary>System schematic</summary><div class="schematic" id="schematic"></div></details>
 <details id="live-json"><summary>All live values</summary><pre id="full" style="white-space:pre-wrap"></pre></details>
 </main>
+<main id="history" hidden>
+<h2>History</h2><p class="muted">Long-term trends from the simulated house.</p>
+<div class="toolbar"><label>Signal <select id="history-signal"></select></label>
+<label>Time period <select id="history-period"><option value="3600">Last hour</option><option value="21600">Last 6 hours</option><option value="86400" selected>Last 24 hours</option><option value="604800">Last 7 days</option></select></label></div>
+<canvas id="history-chart" width="1200" height="480" aria-label="Selected signal history"></canvas>
+<p id="history-status" class="muted"></p></main>
 <main id="configure" hidden>
 <p>Draw the house, place equipment, and connect the heating pipes. Save a draft or apply it to start a new run.</p>
 <div class="toolbar">
@@ -153,13 +160,42 @@ async function api(path, project) {
 }
 
 function showPage(page) {
-    for (const name of ["live","configure"]) $(name).hidden = page !== name;
+    for (const name of ["live","configure","history"]) $(name).hidden = page !== name;
     $("show-live").setAttribute("aria-pressed", page === "live");
     $("show-config").setAttribute("aria-pressed", page === "configure");
     if (page === "configure" && project) drawPlan();
+    if (page === "history") drawHistory();
 }
 $("show-live").onclick = () => showPage("live");
 $("show-config").onclick = () => showPage("configure");
+$("show-history").onclick = () => showPage("history");
+$("history-signal").onchange = drawHistory;
+$("history-period").onchange = drawHistory;
+async function drawHistory() {
+    try {
+        const data = await api("/api/history");
+        const signal = $("history-signal"), keys = data.signals;
+        if (JSON.stringify([...signal.options].map(o=>o.value)) !== JSON.stringify(Object.keys(keys))) {
+            signal.replaceChildren(...Object.entries(keys).map(([key,label]) => {
+                const o=el("option",label); o.value=key; return o;
+            }));
+        }
+        const rows=data.rows, span=Number($("history-period").value);
+        const end=rows.length?rows[rows.length-1].t:0, points=rows.filter(r=>r.t>=end-span);
+        const canvas=$("history-chart"), ctx=canvas.getContext("2d"), w=canvas.width,h=canvas.height;
+        ctx.clearRect(0,0,w,h); ctx.strokeStyle=getComputedStyle(document.body).getPropertyValue("--line");
+        ctx.fillStyle=getComputedStyle(document.body).getPropertyValue("--muted"); ctx.font="14px system-ui";
+        if(points.length<2){$("history-status").textContent="Collecting history. A trend appears after the next minute.";return;}
+        const key=signal.value||Object.keys(keys)[0], vals=points.map(r=>r.v[key]).filter(Number.isFinite);
+        if(!vals.length)return;
+        let lo=Math.min(...vals),hi=Math.max(...vals); if(lo===hi){lo-=1;hi+=1}
+        for(let i=0;i<=4;i++){const y=30+i*(h-60)/4;ctx.beginPath();ctx.moveTo(55,y);ctx.lineTo(w-15,y);ctx.stroke();ctx.fillText((hi-i*(hi-lo)/4).toFixed(1),5,y+5)}
+        ctx.strokeStyle="#e97843";ctx.lineWidth=3;ctx.beginPath();
+        points.forEach((r,i)=>{const x=55+i*(w-75)/(points.length-1),y=h-30-(r.v[key]-lo)*(h-60)/(hi-lo);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
+        ctx.stroke();$("history-status").textContent=`${points.length} samples · ${keys[key]}`;
+    } catch(e) { $("history-status").textContent=e.message; }
+}
+setInterval(()=>{if(!$("history").hidden)drawHistory()},10000);
 
 function input(label, value, changed, options, whole = false, refreshed = null) {
     const wrapper = el("label", label);

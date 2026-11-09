@@ -263,6 +263,8 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
                 min_on_s=row["min_on_s"], min_off_s=row["min_off_s"],
                 loop=_reference(row, "circuit", loops), min_fraction=row.get("minimum_fraction", 0),
                 water_hysteresis_c=row.get("water_hysteresis_c", 0),
+                pump_start_c=row.get("pump_start_c", 35), pump_stop_c=row.get("pump_stop_c", 30),
+                pump_overrun_s=row.get("pump_overrun_s", 180), pump_kw=row.get("pump_kw", 0.06),
                 water_setpoint_control=row.get("water_setpoint_control", False),
                 dhw_loop=row["dhw_circuit"] or None, report_heat=row["report_heat"],
                 automatic_heat_calls=row["automatic_heat_calls"],

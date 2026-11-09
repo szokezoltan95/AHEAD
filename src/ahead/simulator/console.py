@@ -27,6 +27,8 @@ class Console:
         self.remote_devices = {}
         self.remote_callback = None
         self.snapshot = {"status": "waiting for simulator"}
+        self.history_rows = []
+        self.history_last_s = -60
         if path.exists():
             saved = json.loads(path.read_text("utf-8"))
             self.draft = saved["draft"]
@@ -121,6 +123,22 @@ class Console:
                 # The physics diagnostics are shared with the simulator, so copy
                 # the selected entry before adding controller-specific fields.
                 state[group] = state[group] | {unit["device"]:state[group][unit["device"]] | {"controller" if unit["kind"] == "hydronic" else "thermostat": unit}}
+        if sample.end_s - self.history_last_s >= 60:
+            values = {f"room:{n}": v["air_c"] for n,v in state["rooms"].items()}
+            values.update({f"water:{n}":v.get("supply_c") for n,v in state["circuits"].items()})
+            values.update({f"boiler:{n}":v.get("heat_kw",0) for n,v in state["sources"].items()
+                           if v.get("fuel")=="gas"})
+            values.update({f"ac:{n}":v.get("heat_kw",0) for n,v in state["sources"].items()
+                           if v.get("outdoor_unit")})
+            values.update({f"trv:{n}":v.get("opening",0)*100 for n,v in state["emitters"].items()})
+            values.update({f"pump:{n}":float(v.get("pump_on",False)) for n,v in state["sources"].items()
+                           if v.get("fuel")=="gas"})
+            values.update({f"boiler-output:{n}":v.get("heat_kw",0) for n,v in state["sources"].items()
+                           if v.get("fuel")=="gas"})
+            values.update({f"room-rh:{n}":v.get("humidity_pct") for n,v in state["rooms"].items()})
+            self.history_rows.append({"t":sample.end_s,"v":values})
+            self.history_rows = self.history_rows[-10080:]
+            self.history_last_s = sample.end_s
         result = {
             "status": "running", "elapsed_s": sample.end_s,
             "remote_devices": self.remote_devices, "remote_state": remote_state,
@@ -186,6 +204,14 @@ def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
                 self.send(payload, mime=mime)
                 return
             match path:
+                case "/api/history":
+                    with console.lock:
+                        rows=list(console.history_rows)
+                    signals={}
+                    if rows:
+                        for key in rows[0]["v"]:
+                            signals[key]=key.replace(":"," · ").replace("_"," ").title()
+                    self.send({"rows":rows,"signals":signals})
                 case "/api/live":
                     with console.lock:
                         snapshot = console.snapshot

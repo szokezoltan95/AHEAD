@@ -136,6 +136,7 @@ function drawLivePlan(state) {
         livePlanItems = Array.from(canvas.querySelectorAll("[data-live-item]"));
     }
     for (const node of livePlanItems) updateLivePlanItem(node,state);
+    drawHeatAirCells(state, plan, rooms, liveFloor);
     const hasPipes = livePlanItems.some(node => node.classList.contains("live-pipe-item"));
     $("live-pipe-legend").hidden = !hasPipes || $("live-pipes-toggle").getAttribute("aria-pressed") !== "true";
     $("live-pipes-toggle").disabled = !hasPipes;
@@ -314,5 +315,41 @@ function drawDeviceRemote(state) {
         if (!control.pending && state.elapsed_s > control.requestedAt && document.activeElement !== control.input) {
             control.input.value = values[field] ?? "";
         }
+    }
+}
+
+function drawHeatAirCells(state, plan, rooms, floor) {
+    const svgCanvas = $("live-svg");
+    svgCanvas.querySelectorAll(".air-cell, .heat-arrow").forEach(node=>node.remove());
+    const active = Object.values(state.sources||{}).filter(s=>s.heat_kw>0.05);
+    for (const [name,position] of Object.entries(plan.rooms||{})) {
+        const room=rooms[name], reading=state.rooms?.[name];
+        if(!room||room.level!==floor||!reading)continue;
+        const heating=(reading.emitters_kw||0)+(reading.direct_heat_kw||0);
+        const n=7, cellW=room.length_m/n,cellH=room.width_m/n;
+        const gx=position.x+room.length_m*.5,gy=position.y+room.width_m*.5;
+        for(let y=0;y<n;y++)for(let x=0;x<n;x++){
+            const distance=Math.hypot((x+.5)/n-.5,(y+.5)/n-.5);
+            const warm=heating>0.03?Math.max(0,1-distance*1.5):0;
+            const ac=active.some(a=>a.zone===name)&&Object.values(state.sources||{}).some(a=>a.zone===name&&a.fan_kw>0);
+            const cell=svg("rect",{x:(position.x+x*cellW)*PLAN_SCALE,y:(position.y+y*cellH)*PLAN_SCALE,
+                width:cellW*PLAN_SCALE,height:cellH*PLAN_SCALE,class:"air-cell"});
+            const temp=reading.air_c+(warm*1.4)+(ac?(x%2?0.35:-0.2):0);
+            cell.style.fill=`hsl(${Math.max(0,210-(temp-16)*13)} 78% 58% / .28)`;
+            svgCanvas.append(cell);
+        }
+        if(heating>0.03){
+            const arrow=svg("text",{x:gx*PLAN_SCALE,y:gy*PLAN_SCALE,class:"heat-arrow"});
+            arrow.textContent="↑";svgCanvas.append(arrow);
+        }
+    }
+    for(const link of state.heat_links||[]){
+        if(link.kind!=="airflow"||Math.abs(link.kw)<.005)continue;
+        const a=plan.rooms?.[link.first],b=plan.rooms?.[link.second];
+        if(!a||!b||rooms[link.first]?.level!==floor||rooms[link.second]?.level!==floor)continue;
+        const x=(a.x+rooms[link.first].length_m/2)*PLAN_SCALE;
+        const y=(a.y+rooms[link.first].width_m/2)*PLAN_SCALE;
+        const arrow=svg("text",{x,y,class:"heat-arrow interroom-arrow"});
+        arrow.textContent=link.kw>0?"→":"←";svgCanvas.append(arrow);
     }
 }

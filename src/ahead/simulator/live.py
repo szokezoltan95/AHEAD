@@ -260,6 +260,15 @@ class MqttHouse:
             for key in (f"water_setpoint_{name}", f"heat_{name}"):
                 if key in components:
                     device_components[key] = components.pop(key)
+            source_model = self.scenario.house.sources[name]
+            if source_model.pump_kw > 0:
+                pump_key = f"pump_{name}"
+                device_components[pump_key] = {
+                    "platform": "binary_sensor", "name": "Circulation pump",
+                    "unique_id": identifier+"_"+pump_key,
+                    "state_topic": self._topic(pump_key, "state"),
+                    "availability": [{"topic": self.availability_topic}],
+                }
             children.append({
                 "identifiers": [identifier+"_hydronic_"+name],
                 "name": name.replace("_", " ").title(),
@@ -446,6 +455,11 @@ class MqttHouse:
         for key, value in readings.items():
             payload = "None" if value is None else f"{value:.5f}"
             client.publish(self._topic(key, "state"), payload, retain=True)
+        for name, source in self.scenario.house.sources.items():
+            if source.direct_zone is None and source.pump_kw > 0:
+                pump_on = bool(self.scenario.house.source_details.get(name, {}).get("pump_on", False))
+                client.publish(self._topic(f"pump_{name}", "state"),
+                               "ON" if pump_on else "OFF", retain=True)
         for actuator in self.actuators:
             if actuator.kind == "source":
                 requested = sample.plan.sources
