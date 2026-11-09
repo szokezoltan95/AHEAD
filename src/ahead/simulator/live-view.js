@@ -333,26 +333,16 @@ function drawHeatAirCells(state, plan, rooms, floor) {
     for (const [name,position] of Object.entries(plan.rooms||{})) {
         const room=rooms[name], reading=state.rooms?.[name];
         if(!room||room.level!==floor||!reading)continue;
-        const emitters=Object.entries(state.emitters||{}).filter(([,e])=>e.zone===name&&(e.room_heat_kw||0)>.03);
-        const anchoredDevices=[...emitters.map(([id])=>id),...Object.entries(state.sources||{})
-            .filter(([,source])=>source.zone===name&&(source.heat_kw||0)>.03).map(([id])=>id)];
-        const anchors=anchoredDevices.map(id=>Object.values(plan.nodes||{}).find(n=>n.equipment===id&&n.level===floor))
-            .filter(Boolean);
         const heating=(reading.emitters_kw||0)+(reading.direct_heat_kw||0);
         const n=7, cellW=room.length_m/n,cellH=room.width_m/n;
         const gx=position.x+room.length_m*.5,gy=position.y+room.width_m*.5;
         for(let y=0;y<n;y++)for(let x=0;x<n;x++){
-            const cx=position.x+(x+.5)*cellW,cy=position.y+(y+.5)*cellH;
-            const distance=anchors.length?Math.min(...anchors.map(a=>Math.hypot(cx-a.x,cy-a.y))):
-                Math.hypot((x+.5)/n-.5,(y+.5)/n-.5)*Math.hypot(room.length_m,room.width_m);
-            const warm=heating>0.03?Math.exp(-distance/Math.max(.4,Math.min(room.length_m,room.width_m)*.32)):0;
-            const ac=Object.values(state.sources||{}).some(a=>a.zone===name&&a.fan_kw>0);
             const cell=svg("rect",{x:(position.x+x*cellW)*PLAN_SCALE,y:(position.y+y*cellH)*PLAN_SCALE,
                 width:cellW*PLAN_SCALE,height:cellH*PLAN_SCALE,class:"air-cell"});
-            const phase=(state.elapsed_s||0)/90;
-            const swirl=ac?Math.sin((x/n)*Math.PI*4+phase)*Math.cos((y/n)*Math.PI*3-phase*.7)*1.1:0;
-            const temp=reading.air_c+(warm*1.8)+swirl;
+            const temp=reading.air_cells_c?.[y]?.[x] ?? reading.air_c;
             cell.style.fill=`hsl(${Math.max(0,210-(temp-16)*13)} 78% 58% / .28)`;
+            const tooltip=svg("title");tooltip.textContent=`${name.replaceAll("_"," ")} · ${temp.toFixed(1)} °C`;
+            cell.append(tooltip);
             layer.append(cell);
         }
         if(heating>0.03){

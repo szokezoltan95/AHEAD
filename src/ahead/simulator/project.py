@@ -183,11 +183,13 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
         air_to_fabric = max(coupling[name], 2 * external)
         scale = air_to_fabric / (air_to_fabric - external) if external else 1
         zones.append(Zone(
-            name, volume[name] * 1.2 * 1.005 / 3600, mass[name] + row["internal_mass_kwh_k"],
+            name, volume[name] * 1.2 * 1.005 / 3600, mass[name],
             air_to_fabric, envelope[name] * scale, volume[name] * row["ach"] * 1.2 * 1.005 / 3600,
             row["initial_c"], row["target_c"], base_gains_kw=row["gains_kw"],
             ground_kw_k=ground[name] * scale, conditioned=row["preset"] != "unheated",
             expose_sensor=row["expose_sensor"], initial_humidity_pct=row["initial_humidity_pct"],
+            contents_capacity_kwh_k=row["internal_mass_kwh_k"],
+            air_contents_kw_k=row["air_contents_kw_k"],
         ))
         for surface in surface_info.values():
             if surface["room"] == name:
@@ -277,8 +279,22 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
     pipes, nodes = compile_pipes(plan, rows, rectangles)
     paths = pipe_paths(pipes, nodes, emitters, {source.name: source for source in sources})
     pipe_network = PipeNetwork(pipes, paths) if pipes else None
+    source_zones = {name: emitter.zone for name, emitter in emitters.items()}
+    source_zones.update({source.name: source.direct_zone for source in sources if source.direct_zone})
+    air_source_positions = {}
+    for node in plan.get("nodes", {}).values():
+        device, zone_name = node.get("equipment"), source_zones.get(node.get("equipment"))
+        placement = plan.get("rooms", {}).get(zone_name)
+        room = room_rows.get(zone_name)
+        if not device or not placement or not room:
+            continue
+        air_source_positions[device] = (
+            (node["x"] - placement["x"]) / room["length_m"],
+            (node["y"] - placement["y"]) / room["width_m"],
+        )
     house = House(tuple(zones), tuple(partitions), tuple(sources), loops=loops, emitters=emitters,
-                  outdoor_units=outdoor_units, exchangers=exchangers, pipe_network=pipe_network)
+                  outdoor_units=outdoor_units, exchangers=exchangers, pipe_network=pipe_network,
+                  air_source_positions=air_source_positions)
 
     for row in rows["solar"].values():
         face = _reference(row, "surface", surfaces)

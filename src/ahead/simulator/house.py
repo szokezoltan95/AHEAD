@@ -5,7 +5,7 @@ between simulated nodes enters one node and leaves the other in the same step.
 """
 
 from dataclasses import dataclass, field
-from math import isfinite
+from math import exp, isfinite
 from typing import Mapping
 
 from ahead.control import ControlPlan, Equipment, SourceCapabilities
@@ -13,6 +13,15 @@ from ahead.simulator.moisture import AIR_KWH_KG_K, LATENT_KWH_KG, humidity_ratio
 
 
 from ahead.simulator.hydronics import Emitter, HeatExchanger, Hydronics, WaterLoop, WATER_KW_PER_K_PER_L_MIN
+
+
+AIR_GRID_SIZE = 7
+AIR_GRID_CELLS = AIR_GRID_SIZE**2
+AIR_CELL_MIX_KW_K = 0.008
+AIR_CELL_BUOYANCY_KW_K = 0.03
+AIR_CELL_FAN_MIX_KW_K = 0.08
+AIR_CELL_SOURCE_SIGMA = 0.28
+AIR_REFERENCE_CELL_CAPACITY_KWH_K = 0.0003
 
 
 @dataclass(frozen=True)
@@ -33,6 +42,8 @@ class Zone:
     conditioned: bool = True
     expose_sensor: bool = True
     initial_humidity_pct: float = 50
+    contents_capacity_kwh_k: float = 0
+    air_contents_kw_k: float = 0
 
 
 @dataclass(frozen=True)
@@ -155,6 +166,7 @@ class House:
         outdoor_units: Mapping[str, OutdoorUnit] | None = None,
         exchangers: Mapping[str, HeatExchanger] | None = None,
         pipe_network=None,
+        air_source_positions: Mapping[str, tuple[float, float]] | None = None,
     ):
         self.zones = {zone.name: zone for zone in zones}
         self.sources = {source.name: source for source in sources}
@@ -162,7 +174,13 @@ class House:
             raise ValueError("A house needs uniquely named zones and sources")
         self._partitions = partitions
         self._air = {zone.name: zone.initial_c for zone in zones}
+        self._air_cells = {
+            zone.name: [[zone.initial_c for _ in range(AIR_GRID_SIZE)]
+                        for _ in range(AIR_GRID_SIZE)]
+            for zone in zones
+        }
         self._fabric = self._air.copy()
+        self._contents = self._air.copy()
         self._moisture = {
             zone.name: humidity_ratio(zone.initial_c, zone.initial_humidity_pct) for zone in zones
         }
@@ -171,6 +189,14 @@ class House:
             zone.name: Emitter(zone.name, "main", zone.radiator_kw_k, zone.radiator_flow_l_min)
             for zone in zones if zone.radiator_kw_k
         }
+        positions = dict(air_source_positions or {})
+        self._air_source_weights = {}
+        for name, emitter in emitters.items():
+            self._air_source_weights[name] = self._point_weights(*positions.get(name, (.5, .82)))
+        for name, source in self.sources.items():
+            if source.direct_zone is not None:
+                default = (.5, .18) if source.outdoor_unit else (.5, .5)
+                self._air_source_weights[name] = self._point_weights(*positions.get(name, default))
         self.outdoor_units = dict(outdoor_units or {})
         self.exchangers = dict(exchangers or {})
         self._exchanger_details = {}
@@ -193,7 +219,10 @@ class House:
             _check((zone.air_capacity, zone.fabric_capacity), positive=True)
             _check((zone.air_fabric_kw_k, zone.fabric_outside_kw_k, zone.infiltration_kw_k,
                     zone.solar_area_m2, zone.radiator_kw_k, zone.radiator_flow_l_min,
-                    zone.base_gains_kw, zone.ground_kw_k))
+                    zone.base_gains_kw, zone.ground_kw_k, zone.contents_capacity_kwh_k,
+                    zone.air_contents_kw_k))
+            if zone.air_contents_kw_k and not zone.contents_capacity_kwh_k:
+                raise ValueError("Room contents need positive thermal capacity")
             if zone.radiator_kw_k and not zone.radiator_flow_l_min:
                 raise ValueError("Radiators need a positive design flow")
             if not 0 <= zone.initial_humidity_pct <= 100:
@@ -201,7 +230,7 @@ class House:
             if not all(map(isfinite, (zone.initial_c, zone.setpoint_c))):
                 raise ValueError("Zone temperatures must be finite")
             air_conductance[zone.name] = (
-                zone.air_fabric_kw_k + zone.infiltration_kw_k
+                zone.air_fabric_kw_k + zone.air_contents_kw_k + zone.infiltration_kw_k
             )
         for link in partitions:
             _check((link.kw_k,), positive=True)
@@ -290,11 +319,13 @@ class House:
         )
 
         # Bound each explicit integration step by the fastest thermal node.
-        max_rate = max(
-            max(air_conductance[z.name] / z.air_capacity,
-                (z.air_fabric_kw_k + z.fabric_outside_kw_k + z.ground_kw_k) / z.fabric_capacity)
-            for z in zones
-        )
+        max_rate = max(max(
+            air_conductance[z.name] / z.air_capacity,
+            (z.air_fabric_kw_k + z.fabric_outside_kw_k + z.ground_kw_k) / z.fabric_capacity,
+            z.air_contents_kw_k / z.contents_capacity_kwh_k if z.contents_capacity_kwh_k else 0,
+        ) for z in zones)
+        grid_rate = (4 * AIR_CELL_MIX_KW_K + AIR_CELL_BUOYANCY_KW_K) / AIR_REFERENCE_CELL_CAPACITY_KWH_K
+        max_rate = max(max_rate, grid_rate)
         if pipe_network:
             max_rate += sum(
                 pipe.kw_k / (self.zones[pipe.room].fabric_capacity
@@ -303,6 +334,20 @@ class House:
                 for pipe in pipe_network.pipes.values() if pipe.room
             )
         self._max_rate = max((max_rate, *self.hydronics.rates())) + max(exchanger_rates.values(), default=0)
+
+    @staticmethod
+    def _point_weights(x: float, y: float) -> list[list[float]]:
+        x, y = max(0, min(1, x)), max(0, min(1, y))
+        weights = []
+        for row in range(AIR_GRID_SIZE):
+            line = []
+            for column in range(AIR_GRID_SIZE):
+                dx = (column + .5) / AIR_GRID_SIZE - x
+                dy = (row + .5) / AIR_GRID_SIZE - y
+                line.append(exp(-(dx * dx + dy * dy) / (2 * AIR_CELL_SOURCE_SIGMA**2)))
+            weights.append(line)
+        total = sum(map(sum, weights))
+        return [[value / total for value in row] for row in weights]
 
     def reset_run_clock(self) -> None:
         """Preserve thermal state while starting a new measurement window."""
@@ -322,14 +367,21 @@ class House:
     def checkpoint(self) -> dict:
         return {
             "air_c": self._air.copy(), "fabric_c": self._fabric.copy(),
+            "contents_c": self._contents.copy(),
             "water_c": self.hydronics.water.copy(), "slab_c": self.hydronics.slab.copy(),
             "moisture": self._moisture.copy(),
+            "air_cells_c": {name: [row.copy() for row in grid]
+                            for name, grid in self._air_cells.items()},
         }
 
     def restore_checkpoint(self, snapshot: dict) -> None:
         for key, target in (("air_c", self._air), ("fabric_c", self._fabric),
+                            ("contents_c", self._contents),
                             ("water_c", self.hydronics.water), ("slab_c", self.hydronics.slab),
                             ("moisture", self._moisture)):
+            if key == "contents_c" and key not in snapshot:
+                target.update(self._air)
+                continue
             if key == "moisture" and key not in snapshot:
                 target.update({name: humidity_ratio(self._air[name], zone.initial_humidity_pct)
                                for name, zone in self.zones.items()})
@@ -338,6 +390,23 @@ class House:
             if target.keys() != values.keys() or not all(map(isfinite, values.values())):
                 raise ValueError("Checkpoint does not match this house")
             target.update(values)
+        cells = snapshot.get("air_cells_c")
+        if cells is None:
+            self._air_cells = {
+                name: [[self._air[name] for _ in range(AIR_GRID_SIZE)]
+                       for _ in range(AIR_GRID_SIZE)]
+                for name in self.zones
+            }
+        else:
+            if cells.keys() != self.zones.keys() or any(
+                len(grid) != AIR_GRID_SIZE or any(len(row) != AIR_GRID_SIZE for row in grid)
+                or not all(isfinite(value) for row in grid for value in row)
+                for grid in cells.values()
+            ):
+                raise ValueError("Checkpoint air grid does not match this house")
+            self._air_cells = {name: [row.copy() for row in grid] for name, grid in cells.items()}
+            self._air = {name: sum(map(sum, grid)) / AIR_GRID_CELLS
+                         for name, grid in self._air_cells.items()}
         self.reset_run_clock()
 
     @property
@@ -364,7 +433,9 @@ class House:
         return {
             "rooms": {
                 name: {"air_c": self._air[name], "fabric_c": self._fabric[name],
+                       "contents_c": self._contents[name],
                        "humidity_pct": relative_humidity(self._air[name], self._moisture[name]),
+                       "air_cells_c": [row.copy() for row in self._air_cells[name]],
                        **self._room_flux.get(name, {})}
                 for name in self.zones
             },
@@ -445,6 +516,9 @@ class House:
         max_rate = self._max_rate + max(
             dynamic_rate[name] / zone.air_capacity for name, zone in self.zones.items()
         )
+        max_rate += (4 * AIR_CELL_FAN_MIX_KW_K
+                     * max(plan.indoor_fans.values(), default=0.0)
+                     / AIR_REFERENCE_CELL_CAPACITY_KWH_K)
         radiant_rates = dict.fromkeys(self.zones, 0.0)
         for (first, second), area in conditions.radiant_opening_m2.items():
             maximum_k = max(1, self._fabric[first]+273.15, self._fabric[second]+273.15)
@@ -470,6 +544,7 @@ class House:
     def _step(self, dt_h, conditions, plan, available_sources):
         air_flow = dict.fromkeys(self.zones, 0.0)
         fabric_flow = dict.fromkeys(self.zones, 0.0)
+        contents_flow = dict.fromkeys(self.zones, 0.0)
         moisture_flow = dict.fromkeys(self.zones, 0.0)
         dry_air_kg = {name: zone.air_capacity / AIR_KWH_KG_K for name, zone in self.zones.items()}
         outdoor_moisture = humidity_ratio(conditions.outdoor_c, conditions.outdoor_humidity_pct)
@@ -494,6 +569,14 @@ class House:
             outdoor=conditions.outdoor_c, ground=conditions.ground_c,
             pump_enabled=pump_enabled
         )
+        local_air_sources = {name: [] for name in self.zones}
+        for emitter_name, detail in self.hydronics.details.items():
+            delivered = detail["room_heat_kw"]
+            if delivered:
+                local_air_sources[detail["zone"]].append(
+                    (delivered, self._air_source_weights[emitter_name])
+                )
+        fan_mixing = dict.fromkeys(self.zones, 0.0)
         electricity_kw = conditions.appliance_kw
         heat_pump_kw = 0.0
         pump_kw = sum(self.sources[name].pump_kw for name in self._pump_overrun
@@ -507,6 +590,7 @@ class House:
             air = self._air[name]
             fabric = self._fabric[name]
             coupling = (fabric - air) * zone.air_fabric_kw_k
+            contents_coupling = (self._contents[name] - air) * zone.air_contents_kw_k
             air_exchange = zone.infiltration_kw_k + conditions.ventilation_kw_k.get(name, 0)
             ventilation = (outdoor - air) * air_exchange
             moisture_flow[name] = (outdoor_moisture - self._moisture[name]) * air_exchange / AIR_KWH_KG_K
@@ -517,10 +601,12 @@ class House:
             sun = conditions.solar_kw_m2 * zone.solar_area_m2 + conditions.solar_by_zone_kw.get(name, 0)
             pipe_air = self.hydronics.pipe_air_heat[name]
             pipe_fabric = self.hydronics.pipe_fabric_heat[name]
-            air_flow[name] = coupling + ventilation + gains + emitter_heat[name] + pipe_air
+            air_flow[name] = coupling + contents_coupling + ventilation + gains + emitter_heat[name] + pipe_air
             fabric_flow[name] = -coupling + shell + ground + sun + pipe_fabric
+            contents_flow[name] = -contents_coupling
             self._room_flux[name] = {
                 "fabric_to_air_kw": coupling, "ventilation_kw": ventilation, "envelope_kw": shell,
+                "contents_to_air_kw": contents_coupling,
                 "ground_kw": ground, "internal_gains_kw": gains, "solar_kw": sun, "emitters_kw": emitter_heat[name],
                 "neighbours_kw": 0.0, "direct_heat_kw": 0.0,
                 "pipe_to_air_kw": pipe_air, "pipe_to_fabric_kw": pipe_fabric,
@@ -654,6 +740,12 @@ class House:
                 sensible = delivered + latent_kw + fan_kw
                 air_flow[zone] += sensible
                 self._room_flux[zone]["direct_heat_kw"] += sensible
+                if sensible:
+                    local_air_sources[zone].append(
+                        (sensible, self._air_source_weights[name])
+                    )
+                if fan_kw > 0:
+                    fan_mixing[zone] = max(fan_mixing[zone], fan)
             efficiency = source.efficiency + source.efficiency_per_outdoor_k * (
                 outdoor - source.reference_outdoor_c
             )
@@ -690,8 +782,52 @@ class House:
 
         for name, zone in self.zones.items():
             before = self._air[name] - zone.setpoint_c
-            self._air[name] += air_flow[name] * dt_h / zone.air_capacity
+            previous_air = self._air[name]
+            grid = self._air_cells[name]
+            cell_capacity = zone.air_capacity / AIR_GRID_CELLS
+            mix_scale = cell_capacity / AIR_REFERENCE_CELL_CAPACITY_KWH_K
+            base_mix = AIR_CELL_MIX_KW_K * mix_scale
+            buoyancy_mix = AIR_CELL_BUOYANCY_KW_K * mix_scale
+            fan_mix = AIR_CELL_FAN_MIX_KW_K * fan_mixing[name] * mix_scale
+            transfer = [[0.0 for _ in range(AIR_GRID_SIZE)] for _ in range(AIR_GRID_SIZE)]
+            for row in range(AIR_GRID_SIZE):
+                for column in range(AIR_GRID_SIZE - 1):
+                    rate = (grid[row][column] - grid[row][column + 1]) * (base_mix + fan_mix)
+                    transfer[row][column] -= rate
+                    transfer[row][column + 1] += rate
+            for row in range(AIR_GRID_SIZE - 1):
+                for column in range(AIR_GRID_SIZE):
+                    upper, lower = grid[row][column], grid[row + 1][column]
+                    rate = (upper - lower) * (base_mix + fan_mix)
+                    transfer[row][column] -= rate
+                    transfer[row + 1][column] += rate
+                    # Warm air from a radiator or floor emitter rises through
+                    # the room; forced A/C mixing is represented above.
+                    buoyancy = max(0.0, lower - upper) * buoyancy_mix
+                    transfer[row][column] += buoyancy
+                    transfer[row + 1][column] -= buoyancy
+            source_delta = [[0.0 for _ in range(AIR_GRID_SIZE)] for _ in range(AIR_GRID_SIZE)]
+            for heat_kw, weights in local_air_sources[name]:
+                for row in range(AIR_GRID_SIZE):
+                    for column in range(AIR_GRID_SIZE):
+                        source_delta[row][column] += heat_kw * (weights[row][column] - 1 / AIR_GRID_CELLS)
+            cell_exchange = (zone.air_fabric_kw_k + zone.air_contents_kw_k + zone.infiltration_kw_k
+                             + conditions.ventilation_kw_k.get(name, 0.0)) / AIR_GRID_CELLS
+            updated = []
+            for row in range(AIR_GRID_SIZE):
+                line = []
+                for column in range(AIR_GRID_SIZE):
+                    difference = previous_air - grid[row][column]
+                    local_exchange = cell_exchange * difference
+                    rate = (air_flow[name] / AIR_GRID_CELLS + source_delta[row][column]
+                            + local_exchange + transfer[row][column])
+                    line.append(grid[row][column] + rate * dt_h / cell_capacity)
+                updated.append(line)
+            self._air_cells[name] = updated
+            self._air[name] = sum(map(sum, updated)) / AIR_GRID_CELLS
             self._fabric[name] += fabric_flow[name] * dt_h / zone.fabric_capacity
+            if zone.contents_capacity_kwh_k:
+                self._contents[name] += contents_flow[name] * dt_h / zone.contents_capacity_kwh_k
             humidity = self._moisture[name] + moisture_flow[name] * dt_h / dry_air_kg[name]
             self._moisture[name] = min(humidity_ratio(self._air[name],100), max(0,humidity))
             after = self._air[name] - zone.setpoint_c
