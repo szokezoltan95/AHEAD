@@ -12,6 +12,8 @@ services:
     restart: unless-stopped
     depends_on:
       - mqtt
+    environment:
+      AHEAD_ALLOWED_HOSTS: "${AHEAD_ALLOWED_HOSTS:-localhost,127.0.0.1,::1}"
     command:
       - /scenario
       - --host

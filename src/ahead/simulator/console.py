@@ -4,6 +4,7 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 import json
+import os
 from pathlib import Path
 from threading import Event, Lock, Thread
 from urllib.parse import urlsplit
@@ -163,6 +164,13 @@ class Console:
 
 def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
     resources = files(__package__)
+    allowed_hosts = {
+        host.strip().lower()
+        for host in os.environ.get(
+            "AHEAD_ALLOWED_HOSTS", "localhost,127.0.0.1,::1"
+        ).split(",")
+        if host.strip()
+    }
     assets = {
         "/": (resources.joinpath("console.html").read_bytes(), "text/html; charset=utf-8"),
         "/assets/console.css": (resources.joinpath("console.css").read_bytes(), "text/css; charset=utf-8"),
@@ -190,9 +198,9 @@ def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
                 host = urlsplit("//" + self.headers.get("Host", "")).hostname
             except ValueError:
                 host = None
-            if host in {"localhost", "127.0.0.1", "::1"}:
+            if host and host.lower() in allowed_hosts:
                 return True
-            self.send({"error": "Access this local console via localhost"}, 403)
+            self.send({"error": "Console host is not allowed; configure AHEAD_ALLOWED_HOSTS"}, 403)
             return False
 
         def do_GET(self):
