@@ -5,6 +5,9 @@ let diagramLines = [], diagramNodes = new Map(), diagramBasePositions = new Map(
 let diagramPositions = new Map(), liveNetworkNodes = new Map(), heatRows = [], heatRowsKey = "";
 const diagramLayoutKey = "ahead-piping-layout-v1";
 const systemTabs = ["piping","heat","floor"];
+// Keep the whole circuit visible on first load and after a page refresh.
+$("live-piping-diagram").classList.add("fit-network");
+$("live-fit-circuit").setAttribute("aria-pressed","true");
 for (const button of document.querySelectorAll("[data-live-view]")) {
     button.onclick = () => {
         systemView = button.dataset.liveView;
@@ -243,14 +246,12 @@ function networkEdgeGeometry(first,last,run,firstGroup,lastGroup) {
     const startRadius=clip(firstGroup), endRadius=clip(lastGroup), side=run === "supply" ? -9 : 9;
     const start={x:first.x+ux*startRadius+nx*side,y:first.y+uy*startRadius+ny*side};
     const end={x:last.x-ux*endRadius+nx*side,y:last.y-uy*endRadius+ny*side};
-    const middle=(Math.abs(end.x-start.x)>=Math.abs(end.y-start.y)) ?
-        {x:(start.x+end.x)/2,y:start.y} : {x:start.x,y:(start.y+end.y)/2};
-    const other=(middle.x===start.x) ? {x:end.x,y:middle.y} : {x:middle.x,y:end.y};
-    const points=`${start.x},${start.y} ${middle.x},${middle.y} ${other.x},${other.y} ${end.x},${end.y}`;
-    const elbow={x:(middle.x+other.x)/2,y:(middle.y+other.y)/2};
-    const label={x:elbow.x+nx*(run === "supply" ? -36 : 36),
-        y:elbow.y+ny*(run === "supply" ? -36 : 36)};
-    return {points,start,end,label,angle:Math.atan2(other.y-middle.y,other.x-middle.x)*180/Math.PI};
+    const turn={x:end.x,y:start.y};
+    const points=`${start.x},${start.y} ${turn.x},${turn.y} ${end.x},${end.y}`;
+    const label={x:(start.x+turn.x)/2,y:start.y+(run === "supply" ? -26 : 26)};
+    const arrow={x:(turn.x+end.x)/2,y:(turn.y+end.y)/2};
+    return {points,start,end,turn,label,arrow,
+        angle:Math.atan2(end.y-turn.y,end.x-turn.x)*180/Math.PI};
 }
 
 function nodeMetricLines(group,item,metrics) {
@@ -302,7 +303,7 @@ function buildPiping(graph,state) {
             path,target,arrow,label);
         graphic.append(group);
         diagramLines.push({edge,group,label,path,target,arrows:[
-            {node:arrow,x:(geometry.start.x+geometry.end.x)/2,y:(geometry.start.y+geometry.end.y)/2,
+            {node:arrow,x:geometry.arrow.x,y:geometry.arrow.y,
                 angle:geometry.angle,orientation:edge.run==="supply"?1:-1},
         ]});
     }
@@ -359,8 +360,10 @@ function repositionDiagramEdge(item) {
         liveNetworkNodes.get(edge.first)?.group,liveNetworkNodes.get(edge.last)?.group);
     path.setAttribute("points",geometry.points);target.setAttribute("points",geometry.points);
     label.setAttribute("x",geometry.label.x);label.setAttribute("y",geometry.label.y);
-    arrows.forEach(({node,orientation})=>{
-        node.setAttribute("transform",`translate(${(geometry.start.x+geometry.end.x)/2} ${(geometry.start.y+geometry.end.y)/2}) rotate(${geometry.angle}) scale(${orientation} 1)`);
+    arrows.forEach(arrow=>{
+        const {node,orientation}=arrow;
+        arrow.x=geometry.arrow.x;arrow.y=geometry.arrow.y;arrow.angle=geometry.angle;
+        node.setAttribute("transform",`translate(${geometry.arrow.x} ${geometry.arrow.y}) rotate(${geometry.angle}) scale(${orientation} 1)`);
     });
 }
 
