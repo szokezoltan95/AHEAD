@@ -1127,8 +1127,11 @@ class House:
                 "pump_kw": source.pump_kw if source.direct_zone is None and pump_enabled.get(loop_name, False) else 0,
                 "boiler_water_c": self.hydronics.water[loop_name] if source.boiler_water_volume_l else None,
                 "boiler_water_volume_l": source.boiler_water_volume_l or None,
-                "boiler_flow_l_min": source.boiler_flow_l_min or None,
-                "boiler_water_ua_kw_k": source.boiler_water_ua_kw_k or None,
+                "boiler_flow_l_min": self.hydronics.circuits.get(loop_name, {}).get("flow_l_min")
+                if source.boiler_water_volume_l else None,
+                # Legacy project files may still carry this field, but an
+                # in-line boiler has no separate water-to-loop UA.
+                "boiler_water_ua_kw_k": None,
                 "boiler_effective_water_ua_kw_k": None,
                 "boiler_transfer_kw": delivered if source.boiler_water_volume_l else 0.0,
             }
