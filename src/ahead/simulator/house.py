@@ -4,8 +4,8 @@ Heat flows are in kW and thermal capacities are in kWh/K. Each heat transfer
 between simulated nodes enters one node and leaves the other in the same step.
 """
 
-from dataclasses import dataclass, field
-from math import atan2, ceil, cos, exp, expm1, isfinite, log1p, pi, radians, sin, sqrt
+from dataclasses import dataclass, field, replace
+from math import atan2, ceil, cos, exp, expm1, isfinite, pi, radians, sin, sqrt
 from typing import Mapping
 
 from ahead.control import ControlPlan, Equipment, SourceCapabilities
@@ -26,7 +26,6 @@ AIR_AC_SOURCE_SIGMA_M = 0.45
 AIR_DOOR_INTERACTION_DISTANCE_M = 0.5
 AIR_DOOR_CLOSED_KW_K_M2 = 0.002
 AIR_DOOR_OPEN_KW_K_M2 = 0.2
-BOILER_DESIGN_APPROACH_K = 20.0
 
 
 @dataclass(frozen=True)
@@ -251,6 +250,19 @@ class House:
                 edge_cell_load[(first, cell_a)] = edge_cell_load.get((first, cell_a), 0) + conductance
                 edge_cell_load[(second, cell_b)] = edge_cell_load.get((second, cell_b), 0) + conductance
         loops = dict(loops or ({"main": loop} if loop else {}))
+        # Boiler water and heat-exchanger metal are part of the circulating
+        # circuit's thermal mass, not a separate tank coupled through a UA.
+        boiler_capacity_by_loop = dict.fromkeys(loops, 0.0)
+        for source in self.sources.values():
+            if source.boiler_water_volume_l > 0 and source.direct_zone is None:
+                boiler_capacity_by_loop[source.loop] += (
+                    source.boiler_water_volume_l * 4.186 / 3600 +
+                    source.boiler_metal_mass_kg * source.boiler_metal_cp_j_kgk / 3_600_000
+                )
+        loops = {
+            name: replace(item, capacity=item.capacity + boiler_capacity_by_loop[name])
+            for name, item in loops.items()
+        }
         emitters = dict(emitters) if emitters is not None else {
             zone.name: Emitter(zone.name, "main", zone.radiator_kw_k, zone.radiator_flow_l_min)
             for zone in zones if zone.radiator_kw_k
@@ -368,11 +380,8 @@ class House:
                     source.boiler_water_volume_l, source.boiler_metal_mass_kg,
                     source.boiler_metal_cp_j_kgk, source.boiler_flow_l_min,
                     source.boiler_water_ua_kw_k, source.boiler_loss_kw_k))
-            if source.boiler_water_volume_l and (
-                not source.boiler_metal_mass_kg or not source.boiler_flow_l_min or
-                not source.boiler_water_ua_kw_k or not source.boiler_metal_cp_j_kgk
-            ):
-                raise ValueError("A boiler thermal mass needs metal mass, circulation flow, and heat-exchange conductance")
+            if source.boiler_water_volume_l and source.boiler_metal_mass_kg and not source.boiler_metal_cp_j_kgk:
+                raise ValueError("Boiler metal thermal mass needs a positive specific heat")
             _check((source.vertical_swing_period_s, source.horizontal_swing_period_s), positive=True)
             _check((source.vertical_angle_deg, source.horizontal_angle_deg,
                     source.vertical_swing_amplitude_deg, source.horizontal_swing_amplitude_deg))
@@ -445,13 +454,7 @@ class House:
                 for pipe in pipe_network.pipes.values() if pipe.room
             )
             max_rate = max(max_rate, *pipe_network.rates())
-        boiler_rates = []
-        for source in sources:
-            if source.boiler_water_volume_l:
-                capacity = (source.boiler_water_volume_l * 4.186 / 3600 +
-                            source.boiler_metal_mass_kg * source.boiler_metal_cp_j_kgk / 3_600_000)
-                boiler_rates.append((source.boiler_water_ua_kw_k + source.boiler_loss_kw_k) / capacity)
-        self._max_rate = max((max_rate, *self.hydronics.rates(), *boiler_rates)) + max(exchanger_rates.values(), default=0)
+        self._max_rate = max(max_rate, *self.hydronics.rates()) + max(exchanger_rates.values(), default=0)
         for emitter in emitters.values():
             if emitter.rated_output_kw <= 0:
                 continue
@@ -653,7 +656,10 @@ class House:
             "contents_c": self._contents.copy(),
             "water_c": self.hydronics.water.copy(), "slab_c": self.hydronics.slab.copy(),
             "radiator_c": self.hydronics.radiator_c.copy(),
-            "boiler_water_c": self._boiler_water_c.copy(),
+            "boiler_water_c": {
+                name: self.hydronics.water[self.sources[name].loop]
+                for name in self._boiler_water_c
+            },
             "moisture": self._moisture.copy(),
             "air_cells_c": {name: [[row.copy() for row in layer] for layer in grid]
                             for name, grid in self._air_cells.items()},
@@ -715,13 +721,10 @@ class House:
             if snapshot.get("pipe_thermal") is not None:
                 self.hydronics.pipe_network.restore_checkpoint(snapshot["pipe_thermal"])
         if self._boiler_water_c:
-            values = snapshot.get("boiler_water_c")
-            if values is None:
-                values = {name: self.hydronics.water[self.sources[name].loop]
-                          for name in self._boiler_water_c}
-            if values.keys() != self._boiler_water_c.keys() or not all(map(isfinite, values.values())):
-                raise ValueError("Boiler thermal checkpoint does not match this house")
-            self._boiler_water_c.update(values)
+            self._boiler_water_c.update({
+                name: self.hydronics.water[self.sources[name].loop]
+                for name in self._boiler_water_c
+            })
         self.reset_run_clock()
 
     @property
@@ -886,7 +889,7 @@ class House:
         pump_enabled = {self.sources[name].loop: False for name in self._pump_overrun}
         for name, remaining in self._pump_overrun.items():
             source = self.sources[name]
-            water = self._boiler_water_c.get(name, self.hydronics.water[source.loop])
+            water = self.hydronics.water[source.loop]
             if self._source_state[name].on:
                 self._pump_overrun[name] = source.pump_overrun_s
                 pump_enabled[source.loop] = True
@@ -906,33 +909,6 @@ class House:
         )
         emitter_fabric_heat = self.hydronics.emitter_fabric_heat
         radiator_heat = self.hydronics.radiator_heat
-        boiler_flow = dict.fromkeys(self._boiler_water_c, 0.0)
-        boiler_transfer_kw = dict.fromkeys(self._boiler_water_c, 0.0)
-        boiler_effective_ua = dict.fromkeys(self._boiler_water_c, 0.0)
-        for name in self._boiler_water_c:
-            source = self.sources[name]
-            flow_rate = source.boiler_flow_l_min * WATER_KW_PER_K_PER_L_MIN
-            if flow_rate <= 0:
-                continue
-            # A boiler's water jacket is not a restrictive plate heat exchanger.
-            # Size the effective coupling so its rated output can enter the
-            # circulating water at a conventional 20 K design approach, subject
-            # to the energy transport limit imposed by the configured flow.
-            design_conductance = min(
-                source.max_heat_kw / BOILER_DESIGN_APPROACH_K,
-                flow_rate * (1 - 1e-6),
-            )
-            ua_for_rated_output = -flow_rate * log1p(-design_conductance / flow_rate)
-            effective_ua = max(source.boiler_water_ua_kw_k, ua_for_rated_output)
-            boiler_effective_ua[name] = effective_ua
-            if not pump_enabled.get(source.loop, False):
-                continue
-            boiler_c = self._boiler_water_c[name]
-            loop_c = self.hydronics.water[source.loop]
-            transfer = flow_rate * -expm1(-effective_ua / flow_rate) * (boiler_c - loop_c)
-            boiler_flow[name] -= transfer
-            water_flow[source.loop] += transfer
-            boiler_transfer_kw[name] = transfer
         local_air_sources = {name: [] for name in self.zones}
         fan_sources = {name: [] for name in self.zones}
         for emitter_name, detail in self.hydronics.details.items():
@@ -1066,13 +1042,9 @@ class House:
                 water_target = loop.target_c
                 if loop_name == source.loop:
                     water_target = min(loop.target_c, plan.water_setpoints_c.get(name, loop.target_c))
-                target_node = self._boiler_water_c.get(name, self.hydronics.water[loop_name])
-                target_capacity = loop.capacity
-                if name in self._boiler_water_c:
-                    target_capacity = (source.boiler_water_volume_l * 4.186 / 3600 +
-                                       source.boiler_metal_mass_kg * source.boiler_metal_cp_j_kgk / 3_600_000)
-                headroom = (water_target - target_node) * target_capacity / dt_h
-                existing_heat = boiler_flow[name] if name in boiler_flow else water_flow[loop_name]
+                target_node = self.hydronics.water[loop_name]
+                headroom = (water_target - target_node) * loop.capacity / dt_h
+                existing_heat = water_flow[loop_name]
                 limit_kw = min(limit_kw, max(0.0, headroom - existing_heat))
                 if source.water_hysteresis_c:
                     threshold = water_target
@@ -1097,10 +1069,9 @@ class House:
             fan_kw = 0.0
             sensible = delivered
             if source.direct_zone is None:
-                if name in boiler_flow:
-                    boiler_flow[name] += delivered
-                else:
-                    water_flow[loop_name] += delivered
+                # The boiler heats the same water that is circulating through
+                # the loop; there is no separate water-jacket transfer limit.
+                water_flow[loop_name] += delivered
             else:
                 zone = source.direct_zone
                 fan = plan.indoor_fans.get(name, 0)
@@ -1154,31 +1125,31 @@ class House:
                 "heat_pump_tariff": source.heat_pump_tariff,
                 "pump_on": bool(source.direct_zone is None and pump_enabled.get(loop_name, False)),
                 "pump_kw": source.pump_kw if source.direct_zone is None and pump_enabled.get(loop_name, False) else 0,
-                "boiler_water_c": self._boiler_water_c.get(name),
+                "boiler_water_c": self.hydronics.water[loop_name] if source.boiler_water_volume_l else None,
                 "boiler_water_volume_l": source.boiler_water_volume_l or None,
                 "boiler_flow_l_min": source.boiler_flow_l_min or None,
                 "boiler_water_ua_kw_k": source.boiler_water_ua_kw_k or None,
-                "boiler_effective_water_ua_kw_k": boiler_effective_ua.get(name),
-                "boiler_transfer_kw": boiler_transfer_kw.get(name, 0.0),
+                "boiler_effective_water_ua_kw_k": None,
+                "boiler_transfer_kw": delivered if source.boiler_water_volume_l else 0.0,
             }
 
-        for name, boiler_c in self._boiler_water_c.items():
-            source = self.sources[name]
+        for name, source in self.sources.items():
+            if not source.boiler_water_volume_l or source.direct_zone is not None:
+                continue
+            boiler_c = self.hydronics.water[source.loop]
             room = source.boiler_room_zone
             ambient = self._air[room] if room else outdoor
             casing_loss = source.boiler_loss_kw_k * (boiler_c - ambient)
-            boiler_flow[name] -= casing_loss
+            water_flow[source.loop] -= casing_loss
             if room:
                 air_flow[room] += casing_loss
                 self._room_flux[room]["direct_heat_kw"] += casing_loss
                 self._room_flux[room]["boiler_casing_kw"] = casing_loss
+            self._boiler_water_c[name] = boiler_c
+            self._source_details[name]["boiler_water_c"] = boiler_c
             capacity = (source.boiler_water_volume_l * 4.186 / 3600 +
                         source.boiler_metal_mass_kg * source.boiler_metal_cp_j_kgk / 3_600_000)
-            self._boiler_water_c[name] += boiler_flow[name] * dt_h / capacity
-            self._source_details[name]["boiler_water_c"] = self._boiler_water_c[name]
-            self._source_details[name]["boiler_stored_heat_kwh"] = (
-                capacity * (self._boiler_water_c[name] - outdoor)
-            )
+            self._source_details[name]["boiler_stored_heat_kwh"] = capacity * (boiler_c - outdoor)
             self._source_details[name]["boiler_casing_loss_kw"] = casing_loss
 
         opening_cell_flow = {}
@@ -1307,6 +1278,16 @@ class House:
             if zone.conditioned:
                 self.totals.comfort_degree_hours += area
         self.hydronics.advance(dt_h, water_flow, slab_heat, radiator_heat)
+        for name, source in self.sources.items():
+            if source.boiler_water_volume_l and source.direct_zone is None:
+                boiler_c = self.hydronics.water[source.loop]
+                self._boiler_water_c[name] = boiler_c
+                self._source_details[name]["boiler_water_c"] = boiler_c
+                capacity = (source.boiler_water_volume_l * 4.186 / 3600 +
+                            source.boiler_metal_mass_kg * source.boiler_metal_cp_j_kgk / 3_600_000)
+                self._source_details[name]["boiler_stored_heat_kwh"] = (
+                    capacity * (boiler_c - conditions.outdoor_c)
+                )
         imported = max(0, electricity_kw - conditions.solar_pv_kw)
         exported = max(0, conditions.solar_pv_kw - electricity_kw)
         self.totals.house_electricity_kwh += electricity_kw * dt_h
