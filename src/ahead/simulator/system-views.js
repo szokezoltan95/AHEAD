@@ -308,7 +308,10 @@ function buildPiping(graph,state) {
         ]});
     }
     for (const [key,node] of nodes) {
-        const {x,y}=positions.get(key);
+        // Draw each node at its base position; the saved offset is applied to
+        // its group below. Using the saved position here as well doubles the
+        // offset every time a saved layout is restored after a refresh.
+        const {x,y}=diagramBasePositions.get(key);
         if (node.group === "junction") {
             const junction=svg("g",{class:"network-junction-node layout-draggable",
                 "data-layout-node":key,tabindex:"0",role:"button","aria-label":`${node.name}; drag to move`});
