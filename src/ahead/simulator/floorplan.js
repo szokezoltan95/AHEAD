@@ -442,7 +442,9 @@ function objectManagerDialog(section) {
     if (!$("plan-dialog").open) $("plan-dialog").showModal();
 }
 function openObjectManager(section="settings") { objectManagerDialog(section); }
-let objectsButton=$("#objects");
+let objectsButton=$("objects");
+if (!objectsButton) objectsButton=[...document.querySelectorAll("button")].find(button =>
+    button.textContent.trim() === "Configure objects");
 if (!objectsButton) {
     const toolbar=$("download")?.parentElement;
     if (toolbar) {
@@ -451,6 +453,7 @@ if (!objectsButton) {
         toolbar.append(objectsButton);
     }
 }
+if (objectsButton && !objectsButton.id) objectsButton.id="objects";
 if (objectsButton) objectsButton.onclick=()=>openObjectManager();
 function selectTool(tool) {
     activeTool = tool; routePoint = ""; selectedPipes.clear();
