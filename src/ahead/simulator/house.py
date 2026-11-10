@@ -871,13 +871,29 @@ class House:
         max_step_s = min(30.0, 900 / max_rate) if max_rate else 30.0
         remaining_s = duration_s
         while remaining_s > 0:
-            step_s = min(remaining_s, max_step_s)
+            circulation_rate = self._air_circulation_rate()
+            step_s = min(remaining_s, max_step_s,
+                         900 / circulation_rate if circulation_rate else 30.0)
             self._step(step_s / 3600, conditions, plan, available_sources)
             self.elapsed_s += step_s
             remaining_s -= step_s
         self.hydronics.exchange(self._air, plan.valves, 0, fabric=self._fabric,
                                 outdoor=conditions.outdoor_c, ground=conditions.ground_c,
                                 pump_enabled=self._pump_enabled)
+
+    def _air_circulation_rate(self) -> float:
+        """Return the fastest per-cell radiator circulation rate (h⁻¹)."""
+        outgoing = {}
+        for name, detail in self.hydronics.details.items():
+            room = self.hydronics.emitters[name].zone
+            scale = max(0.0, detail.get("convective_heat_kw", 0.0)) / AIR_RADIATOR_PLUME_DELTA_C
+            if not scale:
+                continue
+            for upstream, _downstream, shape in self._air_circulation_patterns.get(name, ()):
+                key = (room, upstream)
+                outgoing[key] = outgoing.get(key, 0.0) + shape * scale
+        return max((rate / (self.zones[room].air_capacity / self._cell_count(room))
+                    for (room, _cell), rate in outgoing.items()), default=0.0)
 
     def _step(self, dt_h, conditions, plan, available_sources):
         air_flow = dict.fromkeys(self.zones, 0.0)
@@ -1209,13 +1225,14 @@ class House:
                             rising = max(0.0, lower - upper) * buoyancy[2]
                             transfer[iz][iy][ix] -= rising
                             transfer[iz + 1][iy][ix] += rising
-            # Upwind heat transport along the divergence-free room vector
-            # field. Equal inflow and outflow at each cell conserve energy.
+            # Conservative upwind transport along the divergence-free room
+            # vector field. Circulation carries each cell's temperature
+            # anomaly along the flow and removes that same energy upstream.
             for upstream, downstream, flow_capacity in circulation_edges:
                 flow = flow_capacity * (
-                    grid[upstream[0]][upstream[1]][upstream[2]]
-                    - grid[downstream[0]][downstream[1]][downstream[2]]
+                    grid[upstream[0]][upstream[1]][upstream[2]] - previous_air
                 )
+                transfer[upstream[0]][upstream[1]][upstream[2]] -= flow
                 transfer[downstream[0]][downstream[1]][downstream[2]] += flow
             for source_name, fan_fraction in fan_sources[name]:
                 horizontal_deg, vertical_deg = plan.airflow_angles_deg.get(
