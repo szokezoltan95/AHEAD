@@ -82,11 +82,15 @@ class PipeFrame:
         old_metal = self.network.metal_c[pipe_id]
         if self.dt_h <= 0:
             # House.step performs a zero-duration exchange after advancing the
-            # model to refresh diagnostics. Preserve the current temperatures,
-            # but still report the requested live flow and route endpoints.
+            # model to refresh diagnostics. Preserve the current temperatures
+            # and last measured segment rates, while refreshing flow and route.
+            previous = self.network.details.get(pipe_id, {})
             self.details[pipe_id].update(
                 flow_l_min=flow, inlet_c=inlet if flow else None,
                 outlet_c=old_water, water_c=old_water, metal_c=old_metal,
+                heat_loss_kw=previous.get("heat_loss_kw", 0.0),
+                water_to_segment_kw=previous.get("water_to_segment_kw", 0.0),
+                stored_heat_kwh=previous.get("stored_heat_kwh", 0.0),
                 flow_from=first, flow_to=last,
             )
             if flow > 0:

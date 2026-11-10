@@ -16,11 +16,16 @@ from ahead.simulator.hydronics import Emitter, HeatExchanger, Hydronics, WaterLo
 
 
 AIR_CELL_SIZE_M = 0.5
-AIR_CELL_MIX_KW_K = 0.0009
+# Effective turbulent exchange between half-metre room-air cells. This is a
+# room-scale mixing coefficient, not molecular conduction through still air.
+AIR_CELL_MIX_KW_K = 0.018
 AIR_CELL_BUOYANCY_KW_K = 0.003
 AIR_CELL_FAN_MIX_KW_K = 0.008
 AIR_CELL_JET_KW_K = 0.04
-AIR_RADIATOR_PLUME_DELTA_C = 8.0
+# Radiator plumes entrain surrounding air as they rise. At room scale their
+# effective temperature excess is much lower than the radiator-face excess;
+# using 2 K gives the corresponding larger recirculating air mass flow.
+AIR_RADIATOR_PLUME_DELTA_C = 2.0
 AIR_EMITTER_SOURCE_SIGMA_M = 0.35
 AIR_AC_SOURCE_SIGMA_M = 0.45
 AIR_DOOR_INTERACTION_DISTANCE_M = 0.5
@@ -447,7 +452,9 @@ class House:
         for zone in zones:
             mix, buoyancy, _fan = self._grid_conductances(zone.name)
             cell_capacity = zone.air_capacity / self._cell_count(zone.name)
-            grid_rate = (2 * sum(mix) + buoyancy[2]) / cell_capacity
+            # Turbulent inter-cell mixing is integrated with a stable pairwise
+            # exchange below, so it does not constrain the house-wide step.
+            grid_rate = buoyancy[2] / cell_capacity
             max_rate = max(max_rate, grid_rate)
         max_rate = max(max_rate, max((conductance / (self.zones[room].air_capacity /
             self._cell_count(room)) for (room, _cell), conductance in edge_cell_load.items()), default=0))
@@ -458,19 +465,8 @@ class House:
                              else self.zones[pipe.room].air_capacity)
                 for pipe in pipe_network.pipes.values() if pipe.room
             )
-            max_rate = max(max_rate, *pipe_network.rates())
-        self._max_rate = max(max_rate, *self.hydronics.rates()) + max(exchanger_rates.values(), default=0)
-        for emitter in emitters.values():
-            if emitter.rated_output_kw <= 0:
-                continue
-            room = emitter.zone
-            nx, ny, _nz = self._air_grid_shape[room]
-            slices = max(nx, ny)
-            cell_capacity = self.zones[room].air_capacity / self._cell_count(room)
-            self._max_rate = max(
-                self._max_rate,
-                emitter.rated_output_kw / AIR_RADIATOR_PLUME_DELTA_C / slices / cell_capacity,
-            )
+            max_rate = max([max_rate, *pipe_network.rates()])
+        self._max_rate = max([max_rate, *self.hydronics.rates()]) + max(exchanger_rates.values(), default=0)
 
     def _cell_count(self, room: str) -> int:
         nx, ny, nz = self._air_grid_shape[room]
@@ -1198,6 +1194,13 @@ class House:
             delivered, status = self._source_output(source, requested_kw, limit_kw,
                 name in available_sources, stopped)
             self._source_heat_kw[name] = delivered
+            if delivered and source.direct_zone is None and name in self._pump_overrun:
+                # Start circulation in the same step as the water source;
+                # otherwise the zero-duration diagnostics refresh still sees
+                # a hot boiler request but reports a disconnected, idle loop.
+                pump_enabled[loop_name] = True
+                self._pump_enabled[loop_name] = True
+                self._pump_overrun[name] = source.pump_overrun_s
             latent_kw = 0.0
             fan_kw = 0.0
             sensible = delivered
@@ -1325,16 +1328,16 @@ class House:
                 for iy in range(ny):
                     for ix in range(nx):
                         if ix + 1 < nx:
-                            rate = (grid[iz][iy][ix] - grid[iz][iy][ix + 1]) * (mix[0] + fan[0])
+                            rate = (grid[iz][iy][ix] - grid[iz][iy][ix + 1]) * fan[0]
                             transfer[iz][iy][ix] -= rate
                             transfer[iz][iy][ix + 1] += rate
                         if iy + 1 < ny:
-                            rate = (grid[iz][iy][ix] - grid[iz][iy + 1][ix]) * (mix[1] + fan[1])
+                            rate = (grid[iz][iy][ix] - grid[iz][iy + 1][ix]) * fan[1]
                             transfer[iz][iy][ix] -= rate
                             transfer[iz][iy + 1][ix] += rate
                         if iz + 1 < nz:
                             lower, upper = grid[iz][iy][ix], grid[iz + 1][iy][ix]
-                            rate = (lower - upper) * (mix[2] + fan[2])
+                            rate = (lower - upper) * fan[2]
                             transfer[iz][iy][ix] -= rate
                             transfer[iz + 1][iy][ix] += rate
                             # Warm air rises from lower cells into cells above.
@@ -1402,7 +1405,31 @@ class House:
                     layer.append(row)
                 updated.append(layer)
             self._air_cells[name] = updated
-            self._air[name] = sum(sum(map(sum, layer)) for layer in updated) / cell_count
+            # Stable conservative exchange for room-scale turbulent mixing.
+            # Pairwise exact relaxation avoids forcing every house subsystem
+            # to use sub-second steps just because air cells mix quickly.
+            mix_fraction = tuple(
+                .5 * -expm1(-2 * conductance * dt_h / cell_capacity)
+                for conductance in mix
+            )
+            for axis, fraction in enumerate(mix_fraction):
+                if fraction <= 0:
+                    continue
+                for iz in range(nz):
+                    for iy in range(ny):
+                        for ix in range(nx):
+                            first = (iz, iy, ix)
+                            next_index = [iz, iy, ix]
+                            next_index[(2, 1, 0)[axis]] += 1
+                            if next_index[0] >= nz or next_index[1] >= ny or next_index[2] >= nx:
+                                continue
+                            second = tuple(next_index)
+                            difference = (self._air_cells[name][first[0]][first[1]][first[2]]
+                                          - self._air_cells[name][second[0]][second[1]][second[2]])
+                            exchanged = difference * fraction
+                            self._air_cells[name][first[0]][first[1]][first[2]] -= exchanged
+                            self._air_cells[name][second[0]][second[1]][second[2]] += exchanged
+            self._air[name] = sum(sum(map(sum, layer)) for layer in self._air_cells[name]) / cell_count
             self._air_currents[name] = self._sample_air_currents(name, air_transport_edges[name])
             self._fabric[name] += fabric_flow[name] * dt_h / zone.fabric_capacity
             if zone.contents_capacity_kwh_k:

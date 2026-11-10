@@ -27,38 +27,103 @@ $("live-fit-circuit").onclick = () => {
 
 function circuitGraph(state,circuit) {
     const plan = state.floorplan;
-    const drawn = Object.entries(plan?.pipes || {}).filter(([,pipe]) => pipe.circuit === circuit);
     const nodes = new Map(), edges = [];
-    if (drawn.length) {
-        for (const [name,pipe] of drawn) {
-            for (const id of [pipe.first,pipe.last]) {
-                const node = plan.nodes[id];
-                if (node) nodes.set(id,{group:node.kind,name:node.equipment || id});
-            }
-            if (nodes.has(pipe.first) && nodes.has(pipe.last)) edges.push({id:name,...pipe});
-        }
-        return {nodes,edges,inferred:false};
-    }
-    const root = "manifold";
-    nodes.set(root,{group:"circuits",name:circuit});
-    const connect = (id, group, name, first, last, emitter) => {
-        nodes.set(id,{group,name});
-        for (const run of ["supply","return"]) {
-            edges.push({id:id+"-"+run,run,first,last,emitter});
-        }
+    const nodeInfo = id => {
+        const node = plan?.nodes?.[id];
+        return node && node.kind !== "junction" ? {group:node.kind,name:node.equipment || id} : null;
     };
-    for (const [name,item] of Object.entries(state.sources || {})) {
-        if (item.loop === circuit) connect("source/"+name,"sources",name,"source/"+name,root);
-    }
+    const sources = Object.entries(state.sources || {}).filter(([,item]) =>
+        item.loop === circuit && !item.direct_zone);
+    const sourceNode = sources.map(([name]) => Object.entries(plan?.nodes || {})
+        .find(([,node]) => node.kind === "sources" && node.equipment === name)?.[0]).find(Boolean);
+    const routeParent = route => {
+        const pipes = [];
+        for (let index=route.length-1;index>=0;index--) {
+            const [pipe,first] = route[index];
+            pipes.push(pipe);
+            if (nodeInfo(first)) return {id:first,pipes:pipes.reverse()};
+        }
+        return {id:null,pipes:pipes.reverse()};
+    };
+    const supplyRoutes=routedEquipmentPaths(state,circuit,"supply");
+    const returnRoutes=routedEquipmentPaths(state,circuit,"return");
     for (const [name,item] of Object.entries(state.emitters || {})) {
-        if (item.loop === circuit) connect("emitter/"+name,"emitters",name,root,"emitter/"+name,name);
+        if (item.loop !== circuit) continue;
+        const supplyRoute=supplyRoutes[name]||[];
+        const returnRoute=returnRoutes[name]||[];
+        const supply = routeParent(supplyRoute);
+        const returning = routeParent(returnRoute);
+        const childId = supplyRoute.at(-1)?.[2] || returnRoute.at(-1)?.[2] ||
+            Object.entries(plan?.nodes || {}).find(([,node]) => node.kind === "emitters" && node.equipment === name)?.[0] ||
+            `emitter/${name}`;
+        const childInfo = nodeInfo(childId) || {group:"emitters",name};
+        if (!nodes.has(childId)) nodes.set(childId,childInfo);
+        const branches = [
+            {run:"supply",route:supplyRoute,parent:supply},
+            {run:"return",route:returnRoute,parent:returning},
+        ];
+        if (!supplyRoute.length && !returnRoute.length) {
+            branches[0].parent={id:sourceNode||`circuit/${circuit}`,pipes:[]};
+        }
+        for (const branch of branches) {
+            if (!branch.route.length && (branch.run!=="supply" || supplyRoute.length || returnRoute.length)) continue;
+            let parentId=branch.parent.id;
+            // Replace a circuit manifold with the boiler/source node at the hub.
+            if (nodeInfo(parentId)?.group === "circuits" && sourceNode) parentId=sourceNode;
+            if (!parentId) parentId=sourceNode||`circuit/${circuit}`;
+            if (!nodes.has(parentId)) {
+                const info=nodeInfo(parentId)||(parentId.startsWith("circuit/")?
+                    {group:"circuits",name:circuit}:null);
+                if (info) nodes.set(parentId,info);
+            }
+            if (parentId===childId) continue;
+            edges.push({
+                id:`${branch.run}/${parentId}/${childId}`,first:parentId,last:childId,
+                run:branch.run,emitter:name,pipes:branch.parent.pipes,
+            });
+        }
     }
-    return {nodes,edges,inferred:true};
+    return {nodes,edges,inferred:!Object.keys(supplyRoutes).length};
 }
 
 function pipeMetrics() {
     return Object.fromEntries([...document.querySelectorAll("[data-pipe-metric]")]
         .map(input => [input.dataset.pipeMetric,input.checked]));
+}
+
+function routedEquipmentPaths(state,circuit,run) {
+    const plan=state.floorplan,nodes=plan?.nodes||{},adjacency=new Map();
+    for (const [id,pipe] of Object.entries(plan?.pipes||{})) {
+        if (pipe.circuit!==circuit||pipe.run!==run) continue;
+        for (const [first,last] of [[pipe.first,pipe.last],[pipe.last,pipe.first]]) {
+            if (!adjacency.has(first)) adjacency.set(first,[]);
+            adjacency.get(first).push([last,id]);
+        }
+    }
+    const roots=Object.entries(nodes).filter(([,node]) =>
+        (node.kind==="circuits"&&node.equipment===circuit) ||
+        (node.kind==="sources"&&state.sources?.[node.equipment]?.loop===circuit&&
+         !state.sources?.[node.equipment]?.direct_zone))
+        .map(([id]) => id).sort();
+    const previous=new Map(roots.map(id=>[id,null])),queue=roots.slice();
+    for (let index=0;index<queue.length;index++) {
+        const first=queue[index];
+        for (const [last,pipe] of adjacency.get(first)||[]) {
+            if (previous.has(last)) continue;
+            previous.set(last,[first,pipe]); queue.push(last);
+        }
+    }
+    const paths={};
+    for (const [nodeId,node] of Object.entries(nodes)) {
+        if (node.kind!=="emitters"||state.emitters?.[node.equipment]?.loop!==circuit||!previous.has(nodeId)) continue;
+        const reverse=[]; let point=nodeId;
+        while (previous.get(point)) {
+            const [parent,pipe]=previous.get(point);
+            reverse.push([pipe,parent,point]); point=parent;
+        }
+        if (reverse.length) paths[node.equipment]=reverse.reverse();
+    }
+    return paths;
 }
 
 function radialNetworkLayout(graph) {
@@ -104,7 +169,7 @@ function radialNetworkLayout(graph) {
     const leafCount = key => children.get(key).length ?
         children.get(key).reduce((total,child) => total+leafCount(child),0) : 1;
     const relative = new Map([[root,{x:0,y:0}]]);
-    const radius = 260;
+    const radius = 220;
     const placeChildren = (key,start,span,depth,parentAngle=null) => {
         const descendants = children.get(key), weights = descendants.map(leafCount);
         let cursor = start;
@@ -120,9 +185,9 @@ function radialNetworkLayout(graph) {
     const bounds = [...relative.values()];
     const extentX = Math.max(0,...bounds.map(point => Math.abs(point.x)));
     const extentY = Math.max(0,...bounds.map(point => Math.abs(point.y)));
-    const padding = 180;
-    const width = Math.max(1100,extentX*2+padding*2);
-    const height = Math.max(760,extentY*2+padding*2);
+    const padding = 145;
+    const width = Math.max(960,extentX*2+padding*2);
+    const height = Math.max(640,extentY*2+padding*2);
     const positions = new Map([...relative].map(([key,point]) =>
         [key,{x:width/2+point.x,y:height/2+point.y}]));
     return {root,positions,width,height,children};
@@ -171,7 +236,8 @@ function buildPiping(graph,state) {
     const graphic=svg("svg",{class:"live-network",width,height,viewBox:`0 0 ${width} ${height}`,
         role:"group","aria-label":"Radial water circuit diagram"});
     diagramLines=[];
-    // Draw pipes first so the equipment and junctions sit clearly above them.
+    // Draw one summarized connection per actual supply or return topology;
+    // intermediate junctions and pipe segments are collapsed.
     for (const edge of edges) {
         const first=positions.get(edge.first),last=positions.get(edge.last);
         if (!first||!last) continue;
@@ -179,16 +245,16 @@ function buildPiping(graph,state) {
             nodes.get(edge.first).group,nodes.get(edge.last).group);
         const path=svg("polyline",{points:geometry.points,class:`plan-pipe ${edge.run}`});
         const target=svg("polyline",{points:geometry.points,class:"pipe-target"});
-        const group=inferred ? svg("g",{class:"live-pipe-item"}) :
-            livePlanItem("pipes",edge.id,"live-pipe-item",path,target);
-        if (inferred) group.append(path);
         const arrow=svg("path",{d:"M-5 -5 5 0-5 5",class:`network-arrow ${edge.run}`});
         const label=svg("text",{x:geometry.label.x,y:geometry.label.y,
             "text-anchor":"middle",class:"network-flow"});
-        group.append(arrow,label);
+        const group=livePlanItem("emitters",edge.emitter,"live-pipe-item",
+            path,target,arrow,label);
         graphic.append(group);
-        diagramLines.push({edge,group,arrow,label,x:(geometry.start.x+geometry.end.x)/2,
-            y:(geometry.start.y+geometry.end.y)/2,angle:geometry.angle,forward:1});
+        diagramLines.push({edge,group,label,arrows:[
+            {node:arrow,x:(geometry.start.x+geometry.end.x)/2,y:(geometry.start.y+geometry.end.y)/2,
+                angle:geometry.angle,orientation:edge.run==="supply"?1:-1},
+        ]});
     }
     for (const [key,node] of nodes) {
         const {x,y}=positions.get(key);
@@ -240,49 +306,48 @@ function drawPiping(state) {
     }
     const graph = circuitGraph(state,systemCircuit);
     $("live-piping-description").textContent = graph.inferred ?
-        "Radial connection view inferred from circuit assignments; this circuit has no drawn pipe routes." :
-        "Radial view of the drawn supply and return network. The heat source is centered; junction dots show connected branches.";
+        "Simplified equipment branches inferred from circuit assignments; supply and return runs are shown separately." :
+        "Simplified equipment-level topology. Supply and return connections are preserved separately; intermediate junctions and pipe segments are collapsed.";
     const key = JSON.stringify([systemCircuit,[...graph.nodes],graph.edges,graph.inferred]);
     if (key !== pipingKey) { pipingKey=key; buildPiping(graph,state); }
     const metrics=pipeMetrics();
-    for (const {edge,group,arrow,label,x,y,angle,forward} of diagramLines) {
-        const pipe = state.pipes?.[edge.id], emitter = state.emitters?.[edge.emitter];
-        const flow = pipe?.flow_l_min ?? emitter?.flow_l_min;
+    for (const {edge,group,arrows,label} of diagramLines) {
+        const emitter = state.emitters?.[edge.emitter];
+        const pipeValues = ids => ids.map(id => state.pipes?.[id]).filter(Boolean);
+        const segments = pipeValues(edge.pipes);
+        const mean = (items,key) => {
+            const values=items.map(item=>item[key]).filter(Number.isFinite);
+            return values.length ? values.reduce((sum,value)=>sum+value,0)/values.length : null;
+        };
+        const flow = mean(segments,"flow_l_min") ?? emitter?.flow_l_min;
         const active = Number.isFinite(flow) && flow > .005;
         group.dataset.state = active ? "flowing" : "idle";
-        const pressed = !graph.inferred && selected === "pipes/"+edge.id;
+        const pressed = selected === "emitters/"+edge.emitter;
         group.classList.toggle("selected",pressed);
-        if (!graph.inferred) {
-            const title = `${human(edge.id)} · ${withUnit(flow,"L/min")} · ${withUnit(pipe?.heat_loss_kw,"kW")} heat loss`;
-            group.firstElementChild.textContent = title;
-            group.setAttribute("aria-label",title);
-            group.setAttribute("aria-pressed",pressed);
-        }
-        const orientation = (graph.inferred ? edge.run === "supply" : pipe?.flow_from === edge.first) ? forward : -forward;
-        arrow.setAttribute("transform",`translate(${x} ${y}) rotate(${angle}) scale(${orientation} 1)`);
-        arrow.style.display = active && (graph.inferred || pipe?.flow_from) ? "" : "none";
-        const inlet = pipe ? pipe.inlet_c :
-            (edge.run === "supply" ? emitter?.supply_c : emitter?.return_c);
-        const outlet = pipe ? pipe.outlet_c : inlet;
+        group.setAttribute("aria-pressed",pressed);
+        const water = mean(segments,"water_c") ?? (edge.run==="supply"?emitter?.supply_c:emitter?.return_c);
         const values=[];
         if (metrics.flow) values.push(Number.isFinite(flow) ? `${format(flow)} L/min` : "Flow —");
-        if (metrics.temperature) values.push(pipe && !(flow > .005) && Number.isFinite(pipe.water_c) ?
-            `Water ${format(pipe.water_c)} °C` : Number.isFinite(inlet) && Number.isFinite(outlet) ?
-            `${format(inlet)} → ${format(outlet)} °C` : Number.isFinite(pipe?.water_c) ?
-                `Water ${format(pipe.water_c)} °C` : "Temperature —");
-        if (metrics.power && pipe) values.push(`Room heat ${format(pipe.heat_loss_kw)} kW`);
-        if (metrics.storage && pipe) values.push(`Stored ${format(pipe.stored_heat_kwh)} kWh`);
+        if (metrics.temperature) values.push(Number.isFinite(water) ?
+            `${edge.run} ${format(water)} °C` : `${edge.run} temperature —`);
+        if (edge.run==="supply"&&metrics.power&&Number.isFinite(emitter?.total_heat_kw)) values.push(`Heat ${format(emitter.total_heat_kw)} kW`);
+        if (metrics.storage && segments.length) {
+            const stored=segments.map(item=>item.stored_heat_kwh).filter(Number.isFinite);
+            if (stored.length) values.push(`Avg stored ${format(stored.reduce((a,b)=>a+b,0)/stored.length)} kWh/segment`);
+        }
         label.replaceChildren();
         values.forEach((value,index) => {
             const line=svg("tspan",{x:label.getAttribute("x"),dy:index?13:0});
             line.textContent=value; label.append(line);
         });
         label.setAttribute("aria-label",values.join("; "));
-        if (!graph.inferred) {
-            const details=`${human(edge.id)} · ${values.join(" · ")}`;
-            group.firstElementChild.textContent=details;
-            group.setAttribute("aria-label",details);
-        }
+        const details=`${human(edge.emitter)} · ${values.join(" · ")}`;
+        group.firstElementChild.textContent=details;
+        group.setAttribute("aria-label",details);
+        arrows.forEach(({node,x,y,angle,orientation})=>{
+            node.setAttribute("transform",`translate(${x} ${y}) rotate(${angle}) scale(${orientation} 1)`);
+            node.style.display=active?"":"none";
+        });
     }
     for (const node of $("live-piping-diagram").querySelectorAll(".network-device")) {
         const [group,name] = node.dataset.liveItem.split("/");
