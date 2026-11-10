@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 4208)
+Total output lines: 235
+
 :root {
     color-scheme: light dark;
     font: 15px/1.45 "Segoe UI", system-ui, sans-serif;
@@ -60,6 +63,8 @@ header small { color: #cfe6f5; }
 .plan-help { margin: .5rem 0; color: var(--muted); }
 .plan-canvas { display: block; width: 100%; height: clamp(320px,58vh,660px); border: 1px solid var(--line); border-radius: 9px; background: var(--soft); touch-action: none; user-select: none; }
 #plan-svg[data-tool]:not([data-tool="select"]) { cursor: crosshair; }
+#plan-svg[data-tool="wall"] .plan-room,
+#plan-svg[data-tool="opening"] .plan-room { pointer-events: none; }
 .plan-room { fill: var(--room); stroke: var(--muted); stroke-width: 1.4; }
 .plan-room.unheated { fill: var(--panel); }
 .plan-room.legacy { stroke-dasharray: 6 3; }
@@ -83,65 +88,7 @@ header small { color: #cfe6f5; }
 .plan-point.active { stroke: var(--blue); stroke-width: 3; }
 .plan-equipment { fill: var(--panel); stroke: var(--blue); stroke-width: 1.5; cursor: pointer; }
 .plan-device-icon { pointer-events: none; color: var(--blue); }
-dialog { width: min(94vw,590px); max-height: 85vh; overflow: auto; padding: 1rem; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 13px; box-shadow: var(--shadow); }
-dialog::backdrop { background: #0a203b82; }
-dialog h2 { margin: .15rem 0 .5rem; font-size: 1.2rem; }
-dialog form { display: grid; grid-template-columns: repeat(auto-fit,minmax(210px,1fr)); gap: .65rem; }
-dialog form > :not(label) { grid-column: 1 / -1; }
-label:has(input[type=checkbox]) { display: flex; align-items: center; flex-direction: row-reverse; justify-content: flex-end; gap: .45rem; }
-input[type=checkbox] { width: auto; }
-dialog .toolbar { margin-bottom: 0; }
-@media (max-width: 560px) { body { padding: .6rem; } header { padding: .7rem; } .toolbar { gap: .4rem; } }
-
-/* Live dashboard */
-.live-heading,.live-panel-heading { display: flex; justify-content: space-between; align-items: center; gap: .8rem; }
-.live-heading { margin: .65rem 0 .95rem; }
-.live-heading h2 { margin: 0; font-size: 1.8rem; line-height: 1.16; }
-.live-heading p,.live-panel-heading p { margin: .23rem 0 0; }
-.live-heading .live-kicker { margin-bottom: .35rem; color: var(--blue); font-size: .7rem; font-weight: 700; letter-spacing: .15em; }
-.live-api { color: var(--blue); font-size: .88rem; white-space: nowrap; }
-.live-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: .7rem; }
-.live-metric { display: grid; grid-template-columns: 1.85rem minmax(0,1fr); align-items: center; column-gap: .55rem;
-    padding: .68rem .8rem; border-radius: 11px; border: 1px solid var(--line); background: var(--panel); }
-.live-metric .icon { grid-row: span 2; width: 1.6rem; height: 1.6rem; padding: .18rem; color: var(--blue); background: var(--blue-soft); border-radius: 5px; }
-.live-metric span { color: var(--muted); font-size: .8rem; }
-.live-metric strong { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
-.live-layout { display: grid; grid-template-columns: minmax(0,2.25fr) minmax(265px,1fr); align-items: start; gap: .8rem; }
-.live-layout .panel { padding: .9rem; margin-bottom: 0; }
-.live-inventory { grid-column: 2; grid-row: 1 / span 2; }
-.live-inspector { grid-column: 1; }
-.live-panel-heading h2 { display: flex; align-items: center; gap: .35rem; margin: 0; }
-.live-panel-heading h2 .icon { color: var(--blue); }
-.live-panel-heading p { font-size: .84rem; }
-.live-panel-heading label { font-size: .75rem; color: var(--muted); }
-.live-map-tools,.live-legend { display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; }
-.live-map-tools { margin: .7rem 0 .55rem; }
-.live-map-tools button { font-size: .8rem; padding: .28rem .45rem; }
-.live-map-tools .icon { width: .9rem; height: .9rem; }
-.live-map .plan-canvas { height: clamp(310px,51vh,560px); touch-action: auto; }
-.live-legend { margin-top: .6rem; gap: .45rem .95rem; color: var(--muted); font-size: .78rem; }
-.live-legend span { display: inline-flex; align-items: center; gap: .28rem; }
-.live-legend i { width: 1.15rem; height: 0; border-top: 3px solid currentColor; border-radius: 2px; }
-.live-legend .legend-idle,.live-legend .legend-riser { border-top-style: dashed; }
-.live-legend .legend-idle { opacity: .55; }
-.live-empty { padding: 1.1rem; border-radius: 8px; background: var(--soft); color: var(--muted); font-size: .9rem; }
-.live-count { padding: .13rem .45rem; border-radius: 999px; background: var(--blue-soft); color: var(--blue); font-size: .8rem; font-weight: 650; }
-#live-equipment-list { max-height: clamp(315px,58vh,650px); overflow-y: auto; padding: 0 .25rem .2rem 0; }
-.live-equipment-group h3 { color: var(--muted); font-size: .73rem; font-weight: 650; text-transform: uppercase; letter-spacing: .08em; margin: .8rem 0 .24rem; }
-.live-equipment-card { width: 100%; display: grid; grid-template-columns: 1.2rem minmax(0,1fr) auto; column-gap: .48rem;
-    text-align: left; margin-bottom: .25rem; padding: .36rem .42rem; background: var(--soft); border-color: transparent; }
-.live-equipment-card .icon { color: var(--blue); }
-.live-equipment-label,.live-equipment-values { display: grid; min-width: 0; }
-.live-equipment-label { overflow-wrap: anywhere; }
-.live-equipment-values { text-align: right; font-variant-numeric: tabular-nums; }
-.live-equipment-card strong { font-size: .82rem; }
-.live-equipment-card small { font-size: .73rem; }
-.live-device-status[data-state="heating"] { color: var(--supply); }
-.live-device-status[data-state="cooling"],.live-device-status[data-state="flowing"] { color: var(--return); }
-.live-device-status[data-state="waiting"] { font-weight: 650; }
-.live-device-status[data-state="off"] { color: var(--supply); font-weight: 650; }
-#connection[data-live-status="running"]::before { content: "●"; margin-right: .4em; color: #8de8b8; }
-#connection[data-live-status="disconnected"]::before { content: "●"; margin-right: .4em; color: #ffa499; }
+dialog { width: min(94vw,590px); max-height: 85vh; o…1208 tokens truncated…}
 .live-inspector { scroll-margin-top: .7rem; }
 .live-inspector-layout { display: grid; grid-template-columns: minmax(0,1.4fr) minmax(0,1fr); gap: 1rem; }
 .live-inspector-layout h3 { color: var(--muted); font-size: .8rem; margin: .75rem 0 .35rem; }
