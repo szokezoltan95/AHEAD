@@ -280,6 +280,7 @@ def derive_envelope(plan, rows):
                     if overlap > TOLERANCE and not (other in derived and other < name):
                         unheated = (rows["rooms"][name]["preset"] == "unheated" or
                                     rows["rooms"][other]["preset"] == "unheated")
+                        tangent_axis = "x" if side in ("north", "south") else "y"
                         removed_area = sum(
                             opening["width_m"] * opening["height_m"]
                             for opening in air_openings
@@ -289,7 +290,6 @@ def derive_envelope(plan, rows):
                             and opening["left_m"] >= first - TOLERANCE
                             and opening["right_m"] <= last + TOLERANCE
                         )
-                        tangent_axis = "x" if side in ("north", "south") else "y"
                         removed_area += sum(
                             _number(item.get("width", 1.2), "Opening width", 0.1, 25)
                             * _number(item.get("height", 2.0), "Opening height", 0.1, room_height)

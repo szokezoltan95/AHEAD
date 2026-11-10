@@ -176,10 +176,12 @@ function paint(canvas,plan,rooms,floor,box,liveSources=null) {
     pattern.append(svg("path",{d:"M12 0H0v12",fill:"none",stroke:"var(--grid)","stroke-width":".65"}));
     defs.append(pattern); canvas.append(defs);
     canvas.append(svg("rect",{x:box[0],y:box[1],width:box[2],height:box[3],fill:`url(#${gridId})`}));
+    const positions = new Map();
     for (const [name,location] of Object.entries(plan.rooms || {})) {
         const room = rooms[name];
         if (room?.level !== floor) continue;
         const position = drawing && drag?.name === name ? drag.position : location;
+        positions.set(name,position);
         const area = svg("rect",{x:position.x*PLAN_SCALE,y:position.y*PLAN_SCALE,
             width:room.length_m*PLAN_SCALE,height:room.width_m*PLAN_SCALE,
             rx:2,class:`plan-room ${room.preset === "unheated" ? "unheated" : ""} ${location.derive ? "" : "legacy"}`,
@@ -192,32 +194,43 @@ function paint(canvas,plan,rooms,floor,box,liveSources=null) {
             reading.setAttribute("class","live-room-temperature");
             canvas.append(livePlanItem("rooms",name,"live-room-item",area,label,reading));
         }
-        for (const side of sides) {
-            const [first,last] = wallLine(position,room,side);
-            if (drawing && ["wall","opening"].includes(activeTool)) {
+    }
+    // Put boundary targets above every room fill. A room may own an opening
+    // that lies on its neighbour's wall, but the shared opening must stay
+    // visible and selectable from either side.
+    if (drawing && ["wall","opening"].includes(activeTool)) {
+        for (const [name,position] of positions) {
+            const room=rooms[name];
+            for (const side of sides) {
+                const [first,last]=wallLine(position,room,side);
                 canvas.append(line(first,last,{class:"plan-wall","data-room":name,"data-wall":side}));
             }
+        }
+    }
+    for (const [name,position] of positions) {
+        const location=plan.rooms[name], room=rooms[name];
+        for (const side of sides) {
+            const [first,last]=wallLine(position,room,side);
             for (const [openingIndex,opening] of (location.walls?.[side]?.openings || []).entries()) {
-                const axis = first.y === last.y ? "x" : "y";
-                const middle = first[axis]+opening.distance;
-                const beginning = {...first,[axis]:middle-opening.width/2};
-                const ending = {...first,[axis]:middle+opening.width/2};
-                const type = opening.type || "window";
+                const axis=first.y === last.y ? "x" : "y";
+                const middle=first[axis]+opening.distance;
+                const beginning={...first,[axis]:middle-opening.width/2};
+                const ending={...first,[axis]:middle+opening.width/2};
+                const type=opening.type || "window";
                 canvas.append(line(beginning,ending,{class:"plan-opening plan-opening-"+type,
                     "data-room":name,"data-wall":side,"data-opening":openingIndex}));
                 if (type === "door" || type === "entry_door") {
-                    const hingeAtEnd = opening.swing_side === "right";
-                    const hinge = hingeAtEnd ? ending : beginning;
-                    const tangent = axis === "x" ? {x:hingeAtEnd ? -1 : 1,y:0} :
+                    const hingeAtEnd=opening.swing_side === "right";
+                    const hinge=hingeAtEnd ? ending : beginning;
+                    const tangent=axis === "x" ? {x:hingeAtEnd ? -1 : 1,y:0} :
                         {x:0,y:hingeAtEnd ? -1 : 1};
-                    const inward = side === "north" ? {x:0,y:1} : side === "south" ? {x:0,y:-1} :
+                    const inward=side === "north" ? {x:0,y:1} : side === "south" ? {x:0,y:-1} :
                         side === "east" ? {x:-1,y:0} : {x:1,y:0};
-                    const openness = Math.max(0,Math.min(100,opening.openness_pct ?? 0))*Math.PI/200;
-                    const direction = opening.swing_direction === "out_of_room" ? -1 : 1;
-                    const dx = (tangent.x*Math.cos(openness)+inward.x*direction*Math.sin(openness))*opening.width;
-                    const dy = (tangent.y*Math.cos(openness)+inward.y*direction*Math.sin(openness))*opening.width;
-                    canvas.append(line(hinge,{x:hinge.x+dx,y:hinge.y+dy},
-                        {class:"plan-door-leaf"}));
+                    const openness=Math.max(0,Math.min(100,opening.openness_pct ?? 0))*Math.PI/200;
+                    const direction=opening.swing_direction === "out_of_room" ? -1 : 1;
+                    const dx=(tangent.x*Math.cos(openness)+inward.x*direction*Math.sin(openness))*opening.width;
+                    const dy=(tangent.y*Math.cos(openness)+inward.y*direction*Math.sin(openness))*opening.width;
+                    canvas.append(line(hinge,{x:hinge.x+dx,y:hinge.y+dy},{class:"plan-door-leaf"}));
                 }
             }
         }
