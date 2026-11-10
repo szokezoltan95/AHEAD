@@ -13,7 +13,9 @@ const readingUnits = {rooms:"°C", circuits:"°C", surfaces:"kW/m²", pipes:"L/m
 let liveState, liveFloor = "", liveFloorsKey = "", liveGeometryKey = "", inventoryKey = "";
 let livePlanItems = [], liveEquipmentCards = [];
 let heatmapEnabled = true;
+let airCurrentsEnabled = false;
 let liveAirSliceM = 0.8;
+let liveFitBox = null, liveViewBox = null;
 
 function withUnit(value,unit) {
     return Number.isFinite(value) ? `${format(value)} ${unit}` : "—";
@@ -116,6 +118,7 @@ function drawLivePlan(state) {
     $("live-plan-empty").hidden = hasPlan;
     if (!hasPlan) {
         liveGeometryKey = "";
+        liveFitBox = liveViewBox = null;
         livePlanItems = [];
         $("live-svg").replaceChildren();
         $("live-plan-empty").textContent = state.elapsed_s === undefined
@@ -135,11 +138,14 @@ function drawLivePlan(state) {
     if (geometry !== liveGeometryKey) {
         liveGeometryKey = geometry;
         const canvas = $("live-svg");
-        paint(canvas,plan,rooms,liveFloor,fitBox(plan,rooms,liveFloor),sources);
+        liveFitBox = fitBox(plan,rooms,liveFloor);
+        liveViewBox = liveFitBox.slice();
+        paint(canvas,plan,rooms,liveFloor,liveViewBox,sources);
         livePlanItems = Array.from(canvas.querySelectorAll("[data-live-item]"));
     }
     for (const node of livePlanItems) updateLivePlanItem(node,state);
     drawHeatAirCells(state, plan, rooms, liveFloor);
+    drawAirCurrentArrows(state, plan, rooms, liveFloor);
     const hasPipes = livePlanItems.some(node => node.classList.contains("live-pipe-item"));
     $("live-pipe-legend").hidden = !hasPipes || $("live-pipes-toggle").getAttribute("aria-pressed") !== "true";
     $("live-pipes-toggle").disabled = !hasPipes;
@@ -173,6 +179,37 @@ $("live-air-slice").oninput = event => {
     $("live-air-slice-value").textContent = `${liveAirSliceM.toFixed(1)} m`;
     drawLivePlan(liveState);
 };
+$("live-currents-toggle").onclick = () => {
+    airCurrentsEnabled = !airCurrentsEnabled;
+    $("live-currents-toggle").setAttribute("aria-pressed",airCurrentsEnabled);
+    $("air-current-legend").hidden = !airCurrentsEnabled;
+    drawLivePlan(liveState);
+};
+function zoomLivePlan(factor,anchorX=.5,anchorY=.5) {
+    const canvas = $("live-svg");
+    if (!liveViewBox || !liveFitBox) return;
+    const [x,y,width,height] = liveViewBox;
+    const nextWidth = Math.max(liveFitBox[2]*.18,Math.min(liveFitBox[2]*5,width*factor));
+    const nextHeight = Math.max(liveFitBox[3]*.18,Math.min(liveFitBox[3]*5,height*factor));
+    const pointX = x + width*anchorX, pointY = y + height*anchorY;
+    liveViewBox = [pointX-anchorX*nextWidth,pointY-anchorY*nextHeight,nextWidth,nextHeight];
+    canvas.setAttribute("viewBox",liveViewBox.join(" "));
+}
+$("live-zoom-in").onclick = () => zoomLivePlan(.8);
+$("live-zoom-out").onclick = () => zoomLivePlan(1.25);
+$("live-fit-plan").onclick = () => {
+    if (!liveFitBox) return;
+    liveViewBox = liveFitBox.slice();
+    $("live-svg").setAttribute("viewBox",liveViewBox.join(" "));
+};
+$("live-svg").addEventListener("wheel",event => {
+    if ($("live-floor-view").hidden || !liveViewBox) return;
+    event.preventDefault();
+    const bounds = $("live-svg").getBoundingClientRect();
+    zoomLivePlan(event.deltaY < 0 ? .88 : 1.14,
+        Math.max(0,Math.min(1,(event.clientX-bounds.left)/bounds.width)),
+        Math.max(0,Math.min(1,(event.clientY-bounds.top)/bounds.height)));
+},{passive:false});
 $("live-overview").onclick = () => selectLive("","",false);
 $("live-json").ontoggle = () => {
     if ($("live-json").open && liveState) $("full").textContent = JSON.stringify(liveState,null,2);
@@ -403,5 +440,64 @@ function drawHeatAirCells(state, plan, rooms, floor) {
         marker.append(svg("path",{d:"M 0 0 L 10 5 L 0 10 z",fill:"#9d55c7"}));defs.append(marker);
     }
     const firstItem=svgCanvas.querySelector(".live-pipe-item, .live-device-item");
+    svgCanvas.insertBefore(layer,firstItem||null);
+}
+
+function drawAirCurrentArrows(state, plan, rooms, floor) {
+    const svgCanvas = $("live-svg");
+    svgCanvas.querySelector(".air-current-layer")?.remove();
+    if (!airCurrentsEnabled) return;
+    const candidates = [];
+    let maximum = 0;
+    for (const [name,position] of Object.entries(plan.rooms||{})) {
+        const room = rooms[name], field = state.rooms?.[name]?.air_currents;
+        if (!room || room.level !== floor || !field) continue;
+        const heights = field.z_centers_m || [];
+        if (!heights.length) continue;
+        const iz = heights.reduce((best,height,index) =>
+            Math.abs(height-liveAirSliceM) < Math.abs(heights[best]-liveAirSliceM) ? index : best,0);
+        const vectors = field.vectors_m_s?.[iz] || [];
+        for (let iy=0;iy<vectors.length;iy++) for (let ix=0;ix<vectors[iy].length;ix++) {
+            const [vx,vy,vz] = vectors[iy][ix] || [0,0,0];
+            const horizontal = Math.hypot(vx,vy);
+            maximum = Math.max(maximum,horizontal,Math.abs(vz));
+            candidates.push({name,position,field,ix,iy,vx,vy,vz,horizontal});
+        }
+    }
+    const layer = svg("g",{class:"air-current-layer"});
+    const defs = svgCanvas.querySelector("defs");
+    if (defs && !defs.querySelector("#air-current-arrowhead")) {
+        const marker = svg("marker",{id:"air-current-arrowhead",viewBox:"0 0 10 10",refX:8,refY:5,
+            markerWidth:4,markerHeight:4,orient:"auto"});
+        marker.append(svg("path",{d:"M 0 0 L 10 5 L 0 10 z",fill:"#54d5e8"}));
+        defs.append(marker);
+    }
+    const threshold = Math.max(.003,maximum*.06);
+    for (const item of candidates) {
+        const {name,position,field,ix,iy,vx,vy,vz,horizontal} = item;
+        const x = (position.x + field.x_centers_m[ix]) * PLAN_SCALE;
+        const y = (position.y + field.y_centers_m[iy]) * PLAN_SCALE;
+        const strength = Math.hypot(horizontal,vz);
+        if (horizontal >= threshold) {
+            const ratio = Math.sqrt(horizontal / Math.max(maximum,1e-9));
+            const length = 9 + 25*ratio;
+            const ux = vx/horizontal, uy = vy/horizontal;
+            const arrow = svg("line",{
+                x1:x-ux*length/2,y1:y-uy*length/2,
+                x2:x+ux*length/2,y2:y+uy*length/2,
+                class:"air-current-arrow","marker-end":"url(#air-current-arrowhead)"
+            });
+            const title = svg("title");
+            title.textContent = `${name.replaceAll("_"," ")} · modeled air current · relative strength ${(strength/Math.max(maximum,1e-9)).toFixed(2)}`;
+            arrow.append(title); layer.append(arrow);
+        } else if (Math.abs(vz) >= threshold) {
+            const arrow = svg("text",{x,y,class:"air-current-vertical"});
+            arrow.textContent = vz > 0 ? "↑" : "↓";
+            const title = svg("title");
+            title.textContent = `${name.replaceAll("_"," ")} · modeled air moving ${vz > 0 ? "up" : "down"} · relative strength ${(strength/Math.max(maximum,1e-9)).toFixed(2)}`;
+            arrow.append(title); layer.append(arrow);
+        }
+    }
+    const firstItem = svgCanvas.querySelector(".live-pipe-item, .live-device-item");
     svgCanvas.insertBefore(layer,firstItem||null);
 }

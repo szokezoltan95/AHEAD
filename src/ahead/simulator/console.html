@@ -51,11 +51,16 @@
                 <button id="live-equipment-toggle" data-icon="radiator" aria-pressed="true">Equipment</button>
                 <button id="live-flow-toggle" data-icon="activity" aria-pressed="false">Flow labels</button>
                 <button id="live-heatmap-toggle" data-icon="activity" aria-pressed="true">Air temperature grid</button>
+                <button id="live-currents-toggle" data-icon="activity" aria-pressed="false">Air currents</button>
+                <button id="live-fit-plan" data-icon="fit">Fit</button>
+                <button id="live-zoom-in" aria-label="Zoom in">+</button>
+                <button id="live-zoom-out" aria-label="Zoom out">−</button>
                 <label class="air-slice-control" for="live-air-slice">Height <span id="live-air-slice-value">0.8 m</span>
                     <input id="live-air-slice" type="range" min="0.1" max="2.7" step="0.1" value="0.8">
                 </label>
             </div>
             <svg class="plan-canvas" id="live-svg" aria-label="Live floor plan"></svg>
+            <div class="live-legend" id="air-current-legend" hidden>Air-current arrows · direction and relative strength</div>
             <div class="live-legend" id="live-pipe-legend">
                 <span class="pipe-supply"><i></i> Supply</span><span class="pipe-return"><i></i> Return</span>
                 <span><i class="legend-idle"></i> No flow</span><span><i class="legend-riser"></i> Riser</span>

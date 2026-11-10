@@ -276,8 +276,11 @@ class House:
             if len(position) == 2:
                 position = (*position, .18)
             self._air_source_positions[name] = position
-            self._air_source_weights[name] = self._point_weights(
-                emitter.zone, *position, sigma=AIR_EMITTER_SOURCE_SIGMA_M)
+            self._air_source_weights[name] = (
+                self._emitter_air_weights(emitter.zone, *position, emitter.width_m, emitter.height_m)
+                if emitter.rated_output_kw > 0 else
+                self._point_weights(emitter.zone, *position, sigma=AIR_EMITTER_SOURCE_SIGMA_M)
+            )
         for name, source in self.sources.items():
             if source.direct_zone is not None:
                 default = (.5, .5, .85) if source.outdoor_unit else (.5, .5, .18)
@@ -294,6 +297,7 @@ class House:
             name: self._build_radiator_circulation_pattern(emitter.zone, name, emitter.width_m)
             for name, emitter in emitters.items()
         }
+        self._air_currents = {name: self._sample_air_currents(name, ()) for name in self.zones}
         self.outdoor_units = dict(outdoor_units or {})
         self.exchangers = dict(exchangers or {})
         self._exchanger_details = {}
@@ -600,6 +604,59 @@ class House:
             weights.append(layer)
         return [[[value / total for value in row] for row in layer] for layer in weights]
 
+    def _emitter_air_weights(self, room: str, x: float, y: float, z: float,
+                             width_m: float, height_m: float):
+        """Distribute radiator convection over its wall-mounted footprint."""
+        dx, dy, dz = self._air_cell_size_m[room]
+        nx, ny, nz = self._air_grid_shape[room]
+        length, breadth, room_height = nx * dx, ny * dy, nz * dz
+        x = max(0.0, min(1.0, x)) * length
+        y = max(0.0, min(1.0, y)) * breadth
+        z = max(0.0, min(1.0, z)) * room_height
+        # The radiator's long axis follows the closest wall. The wall-normal
+        # coordinate selects the shallow air layer in front of its face.
+        wall_axis = 0 if min(x, length - x) <= min(y, breadth - y) else 1
+        if wall_axis == 0:
+            tangent_center, tangent_size, tangent_count = y, dy, ny
+            normal_center, normal_size, normal_count = x, dx, nx
+            normal_length = length
+        else:
+            tangent_center, tangent_size, tangent_count = x, dx, nx
+            normal_center, normal_size, normal_count = y, dy, ny
+            normal_length = breadth
+        wall_low = normal_center <= normal_length / 2
+        wall = 0.0 if wall_low else normal_length
+        tangent_lo = max(0.0, tangent_center - max(width_m, tangent_size) / 2)
+        tangent_hi = min(tangent_count * tangent_size,
+                         tangent_center + max(width_m, tangent_size) / 2)
+        vertical_lo = max(0.0, z - max(height_m, dz) / 2)
+        vertical_hi = min(room_height, z + max(height_m, dz) / 2)
+        weights = [[[0.0 for _ in range(nx)] for _ in range(ny)] for _ in range(nz)]
+        total = 0.0
+        for iz in range(nz):
+            z_lo, z_hi = iz * dz, (iz + 1) * dz
+            vertical_overlap = max(0.0, min(z_hi, vertical_hi) - max(z_lo, vertical_lo))
+            if not vertical_overlap:
+                continue
+            for iy in range(ny):
+                for ix in range(nx):
+                    tangent_index = iy if wall_axis == 0 else ix
+                    t_lo, t_hi = tangent_index * tangent_size, (tangent_index + 1) * tangent_size
+                    tangent_overlap = max(0.0, min(t_hi, tangent_hi) - max(t_lo, tangent_lo))
+                    if not tangent_overlap:
+                        continue
+                    normal_index = ix if wall_axis == 0 else iy
+                    normal_lo, normal_hi = normal_index * normal_size, (normal_index + 1) * normal_size
+                    depth = (normal_lo + normal_hi) / 2 if wall_low else normal_length - (normal_lo + normal_hi) / 2
+                    face_weight = exp(-depth * depth / (2 * AIR_EMITTER_SOURCE_SIGMA_M**2))
+                    value = tangent_overlap * vertical_overlap * face_weight
+                    weights[iz][iy][ix] = value
+                    total += value
+        if total <= 0:
+            return self._point_weights(room, x / length, y / breadth, z / room_height,
+                                       sigma=AIR_EMITTER_SOURCE_SIGMA_M)
+        return [[[value / total for value in row] for row in layer] for layer in weights]
+
     def _airflow_vector(self, room: str, source: str, horizontal_deg: float, vertical_deg: float):
         dx, dy, dz = self._air_cell_size_m[room]
         nx, ny, nz = self._air_grid_shape[room]
@@ -761,6 +818,7 @@ class House:
                            "z_centers_m": [(index + .5) * self._air_cell_size_m[name][2]
                                            for index in range(self._air_grid_shape[name][2])],
                        },
+                       "air_currents": self._air_currents[name],
                        **self._room_flux.get(name, {})}
                 for name in self.zones
             },
@@ -895,11 +953,58 @@ class House:
         return max((rate / (self.zones[room].air_capacity / self._cell_count(room))
                     for (room, _cell), rate in outgoing.items()), default=0.0)
 
+    def _sample_air_currents(self, room: str, edges):
+        """Convert modeled heat-capacity flows to sparse display vectors."""
+        nx, ny, nz = self._air_grid_shape[room]
+        dx, dy, dz = self._air_cell_size_m[room]
+        sums = [[[[0.0, 0.0, 0.0] for _ in range(nx)] for _ in range(ny)] for _ in range(nz)]
+        counts = [[[[0, 0, 0] for _ in range(nx)] for _ in range(ny)] for _ in range(nz)]
+        for upstream, downstream, capacity_flow in edges:
+            differences = [downstream[index] - upstream[index] for index in range(3)]
+            axis = next(index for index, difference in enumerate(differences) if difference)
+            direction = 1 if differences[axis] > 0 else -1
+            area = (dy * dz, dx * dz, dx * dy)[axis]
+            velocity = direction * capacity_flow / (1.2 * AIR_KWH_KG_K * 3600 * area)
+            for iz, iy, ix in (upstream, downstream):
+                sums[iz][iy][ix][axis] += velocity
+                counts[iz][iy][ix][axis] += 1
+        cells = [[[[
+            sums[iz][iy][ix][axis] / counts[iz][iy][ix][axis]
+            if counts[iz][iy][ix][axis] else 0.0
+            for axis in range(3)] for ix in range(nx)] for iy in range(ny)] for iz in range(nz)]
+        step = 2
+        x_centers = [min(nx * dx, (start + min(step, nx - start) / 2) * dx)
+                     for start in range(0, nx, step)]
+        y_centers = [min(ny * dy, (start + min(step, ny - start) / 2) * dy)
+                     for start in range(0, ny, step)]
+        vectors = []
+        for iz in range(nz):
+            layer = []
+            for y0 in range(0, ny, step):
+                row = []
+                for x0 in range(0, nx, step):
+                    block = [cells[iz][iy][ix]
+                             for iy in range(y0, min(ny, y0 + step))
+                             for ix in range(x0, min(nx, x0 + step))]
+                    row.append([sum(vector[axis] for vector in block) / len(block)
+                                for axis in range(3)])
+                layer.append(row)
+            vectors.append(layer)
+        return {
+            "shape": [len(x_centers), len(y_centers), nz],
+            "cell_size_m": [dx * step, dy * step, dz],
+            "x_centers_m": x_centers,
+            "y_centers_m": y_centers,
+            "z_centers_m": [(iz + .5) * dz for iz in range(nz)],
+            "vectors_m_s": vectors,
+        }
+
     def _step(self, dt_h, conditions, plan, available_sources):
         air_flow = dict.fromkeys(self.zones, 0.0)
         fabric_flow = dict.fromkeys(self.zones, 0.0)
         contents_flow = dict.fromkeys(self.zones, 0.0)
         moisture_flow = dict.fromkeys(self.zones, 0.0)
+        air_transport_edges = {name: [] for name in self.zones}
         dry_air_kg = {name: zone.air_capacity / AIR_KWH_KG_K for name, zone in self.zones.items()}
         outdoor_moisture = humidity_ratio(conditions.outdoor_c, conditions.outdoor_humidity_pct)
         pump_enabled = {self.sources[name].loop: False for name in self._pump_overrun}
@@ -1196,11 +1301,10 @@ class House:
             for emitter_name, detail in self.hydronics.details.items():
                 if detail["zone"] == name:
                     scale = max(0.0, detail.get("convective_heat_kw", 0.0)) / AIR_RADIATOR_PLUME_DELTA_C
-                    circulation_edges.extend(
-                        (upstream, downstream, shape * scale)
-                        for upstream, downstream, shape
-                        in self._air_circulation_patterns.get(emitter_name, ())
-                    )
+                    for upstream, downstream, shape in self._air_circulation_patterns.get(emitter_name, ()):
+                        capacity_flow = shape * scale
+                        circulation_edges.append((upstream, downstream, capacity_flow))
+                        air_transport_edges[name].append((upstream, downstream, capacity_flow))
             transfer = [[[0.0 for _ in range(nx)] for _ in range(ny)] for _ in range(nz)]
             for (room_name, (iz, iy, ix)), flow in opening_cell_flow.items():
                 if room_name == name:
@@ -1258,6 +1362,7 @@ class House:
                                 weight = (profile[upstream[0]][upstream[1]][upstream[2]]
                                           + profile[downstream[0]][downstream[1]][downstream[2]]) / 2
                                 conductance = AIR_CELL_JET_KW_K * fan_fraction * abs(direction) * weight
+                                air_transport_edges[name].append((upstream, downstream, conductance))
                                 flow = (grid[upstream[0]][upstream[1]][upstream[2]]
                                         - grid[downstream[0]][downstream[1]][downstream[2]]) * conductance
                                 transfer[upstream[0]][upstream[1]][upstream[2]] -= flow
@@ -1286,6 +1391,7 @@ class House:
                 updated.append(layer)
             self._air_cells[name] = updated
             self._air[name] = sum(sum(map(sum, layer)) for layer in updated) / cell_count
+            self._air_currents[name] = self._sample_air_currents(name, air_transport_edges[name])
             self._fabric[name] += fabric_flow[name] * dt_h / zone.fabric_capacity
             if zone.contents_capacity_kwh_k:
                 self._contents[name] += contents_flow[name] * dt_h / zone.contents_capacity_kwh_k
