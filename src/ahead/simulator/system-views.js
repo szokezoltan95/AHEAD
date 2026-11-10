@@ -4,6 +4,7 @@ let systemView = "piping", systemCircuit = "", systemCircuitsKey = "", pipingKey
 let diagramLines = [], diagramNodes = new Map(), diagramBasePositions = new Map();
 let diagramPositions = new Map(), liveNetworkNodes = new Map(), heatRows = [], heatRowsKey = "";
 const diagramLayoutKey = "ahead-piping-layout-v1";
+const diagramBendLayoutKey = "ahead-piping-bends-v1";
 const systemTabs = ["piping","heat","floor"];
 // Keep the whole circuit visible on first load and after a page refresh.
 $("live-piping-diagram").classList.add("fit-network");
@@ -31,6 +32,7 @@ $("live-fit-circuit").onclick = () => {
 };
 $("live-reset-layout").onclick = () => {
     const layouts=readDiagramLayouts();delete layouts[systemCircuit];writeDiagramLayouts(layouts);
+    const bends=readDiagramBends();delete bends[systemCircuit];writeDiagramBends(bends);
     pipingKey="";drawNetworkViews(liveState);
 };
 
@@ -43,6 +45,16 @@ function readDiagramLayouts() {
 }
 function writeDiagramLayouts(layouts) {
     try { localStorage.setItem(diagramLayoutKey,JSON.stringify(layouts)); } catch { /* private browsing */ }
+}
+function readDiagramBends() {
+    try {
+        const bends=JSON.parse(localStorage.getItem(diagramBendLayoutKey)||"{}");
+        return bends&&typeof bends==="object"&&!Array.isArray(bends)?bends:{};
+    }
+    catch { return {}; }
+}
+function writeDiagramBends(bends) {
+    try { localStorage.setItem(diagramBendLayoutKey,JSON.stringify(bends)); } catch { /* private browsing */ }
 }
 
 function circuitGraph(state,circuit) {
@@ -238,7 +250,7 @@ function radialNetworkLayout(graph) {
     return {root,positions,width,height,children};
 }
 
-function networkEdgeGeometry(first,last,run,firstGroup,lastGroup) {
+function networkEdgeGeometry(first,last,run,firstGroup,lastGroup,bend="horizontal") {
     const dx=last.x-first.x, dy=last.y-first.y, length=Math.hypot(dx,dy)||1;
     const ux=dx/length, uy=dy/length, nx=-uy, ny=ux;
     const clip=(group)=> group === "junction" ? 11 :
@@ -246,9 +258,11 @@ function networkEdgeGeometry(first,last,run,firstGroup,lastGroup) {
     const startRadius=clip(firstGroup), endRadius=clip(lastGroup), side=run === "supply" ? -9 : 9;
     const start={x:first.x+ux*startRadius+nx*side,y:first.y+uy*startRadius+ny*side};
     const end={x:last.x-ux*endRadius+nx*side,y:last.y-uy*endRadius+ny*side};
-    const turn={x:end.x,y:start.y};
+    const turn=bend==="vertical"?{x:start.x,y:end.y}:{x:end.x,y:start.y};
     const points=`${start.x},${start.y} ${turn.x},${turn.y} ${end.x},${end.y}`;
-    const label={x:(start.x+turn.x)/2,y:start.y+(run === "supply" ? -26 : 26)};
+    const label=bend==="vertical"?
+        {x:start.x+(run === "supply" ? -30 : 30),y:(start.y+turn.y)/2}:
+        {x:(start.x+turn.x)/2,y:start.y+(run === "supply" ? -26 : 26)};
     const arrow={x:(turn.x+end.x)/2,y:(turn.y+end.y)/2};
     return {points,start,end,turn,label,arrow,
         angle:Math.atan2(end.y-turn.y,end.x-turn.x)*180/Math.PI};
@@ -279,6 +293,7 @@ function buildPiping(graph,state) {
     const {width,height}=layout;
     diagramBasePositions=new Map([...layout.positions].map(([key,value])=>[key,{...value}]));
     const saved=readDiagramLayouts()[systemCircuit]||{};
+    const savedBends=readDiagramBends()[systemCircuit]||{};
     diagramPositions=new Map([...diagramBasePositions].map(([key,value])=>[
         key,Number.isFinite(saved[key]?.x)&&Number.isFinite(saved[key]?.y)?
             {x:Math.max(100,Math.min(width-100,saved[key].x)),y:Math.max(100,Math.min(height-100,saved[key].y))}:{...value},
@@ -292,8 +307,9 @@ function buildPiping(graph,state) {
     for (const edge of edges) {
         const first=positions.get(edge.first),last=positions.get(edge.last);
         if (!first||!last) continue;
+        const bend=savedBends[edge.id]==="vertical"?"vertical":"horizontal";
         const geometry=networkEdgeGeometry(first,last,edge.run,
-            nodes.get(edge.first).group,nodes.get(edge.last).group);
+            nodes.get(edge.first).group,nodes.get(edge.last).group,bend);
         const path=svg("polyline",{points:geometry.points,class:`plan-pipe ${edge.run}${edge.virtual?" diagram-link":""}`});
         const target=svg("polyline",{points:geometry.points,class:"pipe-target"});
         const arrow=svg("path",{d:"M-5 -5 5 0-5 5",class:`network-arrow ${edge.run}`});
@@ -302,7 +318,13 @@ function buildPiping(graph,state) {
         const group=livePlanItem("emitters",edge.emitter,"live-pipe-item",
             path,target,arrow,label);
         graphic.append(group);
-        diagramLines.push({edge,group,label,path,target,arrows:[
+        const bendHandle=edge.virtual?null:svg("circle",{
+            cx:geometry.turn.x,cy:geometry.turn.y,r:8,class:"network-bend-handle",
+            "data-layout-bend":edge.id,tabindex:"0",role:"button",
+            "aria-label":`Pipe elbow; drag to switch between horizontal-first and vertical-first routing`,
+        });
+        if(bendHandle){const title=svg("title");title.textContent="Drag elbow to change pipe starting direction";bendHandle.append(title);}
+        diagramLines.push({edge,group,label,path,target,bend,bendHandle,arrows:[
             {node:arrow,x:geometry.arrow.x,y:geometry.arrow.y,
                 angle:geometry.angle,orientation:edge.run==="supply"?1:-1},
         ]});
@@ -343,6 +365,7 @@ function buildPiping(graph,state) {
         device.setAttribute("tabindex","0");device.setAttribute("aria-label",`${name}; drag to move`);
         graphic.append(device);diagramNodes.set(key,device);
     }
+    for(const item of diagramLines)if(item.bendHandle)graphic.append(item.bendHandle);
     for(const key of diagramNodes.keys())applyDiagramNodePosition(key);
     bindDiagramDragging(graphic);
     $("live-piping-diagram").replaceChildren(graphic);
@@ -360,9 +383,10 @@ function repositionDiagramEdge(item) {
     const first=diagramPositions.get(edge.first),last=diagramPositions.get(edge.last);
     if(!first||!last)return;
     const geometry=networkEdgeGeometry(first,last,edge.run,
-        liveNetworkNodes.get(edge.first)?.group,liveNetworkNodes.get(edge.last)?.group);
+        liveNetworkNodes.get(edge.first)?.group,liveNetworkNodes.get(edge.last)?.group,item.bend);
     path.setAttribute("points",geometry.points);target.setAttribute("points",geometry.points);
     label.setAttribute("x",geometry.label.x);label.setAttribute("y",geometry.label.y);
+    if(item.bendHandle){item.bendHandle.setAttribute("cx",geometry.turn.x);item.bendHandle.setAttribute("cy",geometry.turn.y);}
     arrows.forEach(arrow=>{
         const {node,orientation}=arrow;
         arrow.x=geometry.arrow.x;arrow.y=geometry.arrow.y;arrow.angle=geometry.angle;
@@ -377,18 +401,42 @@ function bindDiagramDragging(graphic) {
         return point.matrixTransform(graphic.getScreenCTM().inverse());
     };
     graphic.addEventListener("pointerdown",event=>{
+        const handle=event.target.closest("[data-layout-bend]");
+        if(handle&&event.button===0){
+            const item=diagramLines.find(line=>line.edge.id===handle.dataset.layoutBend);
+            if(!item)return;
+            event.preventDefault();event.stopPropagation();
+            drag={type:"bend",item,pointerId:event.pointerId,start:pointAt(event),moved:false};
+            graphic.setPointerCapture(event.pointerId);handle.classList.add("dragging");
+            return;
+        }
         const node=event.target.closest("[data-layout-node]");
         if(!node||event.button!==0)return;
         const key=node.dataset.layoutNode,position=diagramPositions.get(key);
         if(!position)return;
         event.preventDefault();event.stopPropagation();
         const point=pointAt(event);
-        drag={key,node,pointerId:event.pointerId,start:point,origin:{...position},moved:false};
+        drag={type:"node",key,node,pointerId:event.pointerId,start:point,origin:{...position},moved:false};
         graphic.setPointerCapture(event.pointerId);node.classList.add("dragging");
     });
     graphic.addEventListener("pointermove",event=>{
         if(!drag||event.pointerId!==drag.pointerId)return;
-        const point=pointAt(event),position={
+        const point=pointAt(event);
+        if(drag.type==="bend"){
+            const item=drag.item,{edge}=item;
+            const first=diagramPositions.get(edge.first),last=diagramPositions.get(edge.last);
+            const groups=[liveNetworkNodes.get(edge.first)?.group,liveNetworkNodes.get(edge.last)?.group];
+            const options=["horizontal","vertical"].map(axis=>({axis,turn:networkEdgeGeometry(
+                first,last,edge.run,groups[0],groups[1],axis).turn}));
+            const distance=option=>Math.hypot(point.x-option.turn.x,point.y-option.turn.y);
+            const current=options.find(option=>option.axis===item.bend);
+            const other=options.find(option=>option.axis!==item.bend);
+            drag.moved ||= Math.hypot(point.x-drag.start.x,point.y-drag.start.y)>2;
+            if(distance(other)+8<distance(current))item.bend=other.axis;
+            repositionDiagramEdge(item);
+            return;
+        }
+        const position={
             x:Math.max(100,Math.min(Number(graphic.getAttribute("width"))-100,drag.origin.x+point.x-drag.start.x)),
             y:Math.max(100,Math.min(Number(graphic.getAttribute("height"))-100,drag.origin.y+point.y-drag.start.y)),
         };
@@ -398,6 +446,17 @@ function bindDiagramDragging(graphic) {
     });
     const finish=event=>{
         if(!drag||event.pointerId!==drag.pointerId)return;
+        if(drag.type==="bend"){
+            const item=drag.item;item.bendHandle.classList.remove("dragging");
+            const moved=drag.moved;drag=null;
+            if(moved){
+                const bends=readDiagramBends();
+                bends[systemCircuit]=Object.fromEntries(diagramLines.filter(line=>!line.edge.virtual)
+                    .map(line=>[line.edge.id,line.bend]));
+                writeDiagramBends(bends);
+            }
+            return;
+        }
         const node=drag.node,moved=drag.moved;node.classList.remove("dragging");drag=null;
         if(moved){
             const layouts=readDiagramLayouts();
@@ -430,8 +489,8 @@ function drawPiping(state) {
     }
     const graph = circuitGraph(state,systemCircuit);
     $("live-piping-description").textContent = graph.inferred ?
-        "Simplified branches inferred from circuit assignments. Drag nodes to arrange them; the layout is saved in this browser." :
-        "Equipment-level topology with shared pipe taps shown as junctions. Supply and return are separate. Drag nodes to arrange them; the layout is saved in this browser.";
+        "Simplified branches inferred from circuit assignments. Drag nodes to arrange them and pipe elbows to choose horizontal-first or vertical-first routing. Changes are saved in this browser." :
+        "Equipment-level topology with shared pipe taps shown as junctions. Drag nodes to arrange them and pipe elbows to choose horizontal-first or vertical-first routing. Changes are saved in this browser.";
     const key = JSON.stringify([systemCircuit,[...graph.nodes],graph.edges,graph.inferred]);
     if (key !== pipingKey) { pipingKey=key; buildPiping(graph,state); }
     const metrics=pipeMetrics();

@@ -193,6 +193,9 @@ dialog .toolbar { margin-bottom: 0; }
 .network-reading { font-size: 11px; fill: var(--muted); }
 .network-junction.supply { fill: var(--supply); }
 .network-junction.return { fill: var(--return); }
+.network-bend-handle { fill: var(--panel); stroke: var(--text); stroke-width: 2.5; cursor: grab; touch-action: none; }
+.network-bend-handle:hover,.network-bend-handle:focus-visible { fill: var(--blue); stroke-width: 3.5; }
+.network-bend-handle.dragging { cursor: grabbing; }
 .network-junction-title { font-size: 11px; font-weight: 650; fill: var(--muted); pointer-events: none; }
 .network-arrow.supply { fill: var(--supply); }
 .network-arrow.return { fill: var(--return); }
