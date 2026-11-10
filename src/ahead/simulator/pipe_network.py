@@ -81,6 +81,16 @@ class PipeFrame:
         old_water = self.network.water_c[pipe_id]
         old_metal = self.network.metal_c[pipe_id]
         if self.dt_h <= 0:
+            # House.step performs a zero-duration exchange after advancing the
+            # model to refresh diagnostics. Preserve the current temperatures,
+            # but still report the requested live flow and route endpoints.
+            self.details[pipe_id].update(
+                flow_l_min=flow, inlet_c=inlet if flow else None,
+                outlet_c=old_water, water_c=old_water, metal_c=old_metal,
+                flow_from=first, flow_to=last,
+            )
+            if flow > 0:
+                self.updated.add(pipe_id)
             return old_water
         water_capacity = max(pipe.water_volume_l * WATER_KWH_PER_L_K, 1e-9)
         metal_capacity = max(pipe.metal_mass_kg * METAL_CP[pipe.material] / 3_600_000, 1e-9)

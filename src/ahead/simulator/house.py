@@ -5,7 +5,7 @@ between simulated nodes enters one node and leaves the other in the same step.
 """
 
 from dataclasses import dataclass, field
-from math import atan2, ceil, cos, exp, expm1, isfinite, pi, radians, sin, sqrt
+from math import atan2, ceil, cos, exp, expm1, isfinite, log1p, pi, radians, sin, sqrt
 from typing import Mapping
 
 from ahead.control import ControlPlan, Equipment, SourceCapabilities
@@ -26,6 +26,7 @@ AIR_AC_SOURCE_SIGMA_M = 0.45
 AIR_DOOR_INTERACTION_DISTANCE_M = 0.5
 AIR_DOOR_CLOSED_KW_K_M2 = 0.002
 AIR_DOOR_OPEN_KW_K_M2 = 0.2
+BOILER_DESIGN_APPROACH_K = 20.0
 
 
 @dataclass(frozen=True)
@@ -907,16 +908,28 @@ class House:
         radiator_heat = self.hydronics.radiator_heat
         boiler_flow = dict.fromkeys(self._boiler_water_c, 0.0)
         boiler_transfer_kw = dict.fromkeys(self._boiler_water_c, 0.0)
+        boiler_effective_ua = dict.fromkeys(self._boiler_water_c, 0.0)
         for name in self._boiler_water_c:
             source = self.sources[name]
-            if not pump_enabled.get(source.loop, False):
-                continue
             flow_rate = source.boiler_flow_l_min * WATER_KW_PER_K_PER_L_MIN
             if flow_rate <= 0:
                 continue
+            # A boiler's water jacket is not a restrictive plate heat exchanger.
+            # Size the effective coupling so its rated output can enter the
+            # circulating water at a conventional 20 K design approach, subject
+            # to the energy transport limit imposed by the configured flow.
+            design_conductance = min(
+                source.max_heat_kw / BOILER_DESIGN_APPROACH_K,
+                flow_rate * (1 - 1e-6),
+            )
+            ua_for_rated_output = -flow_rate * log1p(-design_conductance / flow_rate)
+            effective_ua = max(source.boiler_water_ua_kw_k, ua_for_rated_output)
+            boiler_effective_ua[name] = effective_ua
+            if not pump_enabled.get(source.loop, False):
+                continue
             boiler_c = self._boiler_water_c[name]
             loop_c = self.hydronics.water[source.loop]
-            transfer = flow_rate * -expm1(-source.boiler_water_ua_kw_k / flow_rate) * (boiler_c - loop_c)
+            transfer = flow_rate * -expm1(-effective_ua / flow_rate) * (boiler_c - loop_c)
             boiler_flow[name] -= transfer
             water_flow[source.loop] += transfer
             boiler_transfer_kw[name] = transfer
@@ -1143,6 +1156,9 @@ class House:
                 "pump_kw": source.pump_kw if source.direct_zone is None and pump_enabled.get(loop_name, False) else 0,
                 "boiler_water_c": self._boiler_water_c.get(name),
                 "boiler_water_volume_l": source.boiler_water_volume_l or None,
+                "boiler_flow_l_min": source.boiler_flow_l_min or None,
+                "boiler_water_ua_kw_k": source.boiler_water_ua_kw_k or None,
+                "boiler_effective_water_ua_kw_k": boiler_effective_ua.get(name),
                 "boiler_transfer_kw": boiler_transfer_kw.get(name, 0.0),
             }
 
