@@ -441,7 +441,16 @@ function objectManagerDialog(section) {
     if (!$("plan-dialog").open) $("plan-dialog").showModal();
 }
 function openObjectManager(section="settings") { objectManagerDialog(section); }
-$("#objects").onclick=()=>openObjectManager();
+let objectsButton=$("#objects");
+if (!objectsButton) {
+    const toolbar=$("download")?.parentElement;
+    if (toolbar) {
+        objectsButton=el("button","Configure objects");
+        objectsButton.id="objects";
+        toolbar.append(objectsButton);
+    }
+}
+if (objectsButton) objectsButton.onclick=()=>openObjectManager();
 function selectTool(tool) {
     activeTool = tool; routePoint = ""; selectedPipes.clear();
     for (const button of document.querySelectorAll("button[data-tool]")) {
