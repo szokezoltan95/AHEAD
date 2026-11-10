@@ -283,7 +283,10 @@ class ClimateControls:
             "action_topic":self.topic(unit,"action"), "qos":1, "retain":False,
             "availability":availability, "availability_mode":"all",
         }
-        if unit.kind == "trv" or self.house.zones[unit.zone].expose_sensor:
+        # Do not publish room-average simulation values as an HVAC sensor.
+        # TRV temperature is its own local device measurement; room sensors are
+        # represented separately by explicitly placed temperature sensors.
+        if unit.kind == "trv":
             climate["current_temperature_topic"] = self.topic(unit,"current")
         for field, prefix in paired.items():
             climate[prefix+"_command_topic"] = self.topic(unit,field,"set")
@@ -296,7 +299,7 @@ class ClimateControls:
                 climate.pop("preset_modes")
             if unit.has_swing:
                 climate["swing_modes"] = list(unit.swing_modes)
-            if self.house.zones[unit.zone].expose_sensor and self.house.sources[unit.name].report_indoor_humidity:
+            if self.house.sources[unit.name].report_indoor_humidity:
                 climate["current_humidity_topic"] = self.topic(unit,"humidity")
             if "humidity_target" in paired:
                 climate.update(min_humidity=35,max_humidity=80)
@@ -429,12 +432,10 @@ class ClimateControls:
                 values.update(vertical_angle=state["vertical_angle"],
                               horizontal_angle=state["horizontal_angle"])
                 model = self.house.sources[unit.name]
-                if model.report_indoor_humidity and self.house.zones[unit.zone].expose_sensor:
+                if model.report_indoor_humidity:
                     values["humidity"] = state["humidity_pct"]
                 if model.humidity_setpoint_control and "dry" in unit.modes:
                     values["humidity_target"] = state["humidity_target"]
-                if not self.house.zones[unit.zone].expose_sensor:
-                    values.pop("current")
                 action = "off" if state["mode"] == "off" and not output else "idle"
                 if output > .005:
                     action = "heating"

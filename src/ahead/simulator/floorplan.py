@@ -447,7 +447,7 @@ def compile_pipes(plan, rows, rectangles):
         _number(node.get("y"), "Pipe y position", -500, 500)
         _number(node.get("height_mm", 150), "Pipe height", -2000, 10000)
         kind = node.get("kind", "junction")
-        if kind not in {"junction", "sources", "emitters", "circuits"}:
+        if kind not in {"junction", "sources", "emitters", "circuits", "temperature_sensors"}:
             raise ValueError(f"Unknown pipe endpoint type at {name}")
         if kind != "junction" and node.get("equipment") not in rows[kind]:
             raise ValueError(f"Pipe point {name} references missing equipment")

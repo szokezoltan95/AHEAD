@@ -116,6 +116,9 @@ PRESETS = {
                        "loop_length_m": 100.0, "flow_l_min": 2.0, "slab_depth_m": 0.06,
                        "finish_r_m2k_w": 0.04, "travel_s": 120.0},
     },
+    "temperature_sensors": {
+        "room_sensor": {"room": "", "offset_c": 0.0, "noise_c": 0.0},
+    },
     "sources": {
         "gas_on_off": {"circuit": "", "capacity_kw": 12.0, "efficiency": 0.86,
                        "min_on_s": 120.0, "min_off_s": 180.0, "dhw_circuit": "", "water_hysteresis_c": 0.0, "pump_start_c": 35.0, "pump_stop_c": 30.0, "pump_overrun_s": 180.0, "pump_kw": 0.06,

@@ -173,10 +173,7 @@ class MqttHouse:
 
     def discovery(self) -> dict:
         components = {}
-        temperatures = {"outdoor": "Outdoor", **{
-            f"zone_{zone}": zone.replace("_", " ").title()
-            for zone, model in self.scenario.house.zones.items() if model.expose_sensor
-        }}
+        temperatures = {"outdoor": "Outdoor"}
         if self.scenario.house.water_c is not None and not self.scenario.environment:
             temperatures.update({"supply": "Supply water", "return": "Return water"})
             components["flow"] = self._sensor("flow", "Water flow", "L/min")
@@ -253,6 +250,17 @@ class MqttHouse:
                 "identifiers": [identifier+"_"+unit.key],
                 "name": f"{name} {label}",
                 "components": self.climate.components(unit, identifier, availability),
+            })
+        for sensor in self.scenario.temperature_sensors:
+            sensor_id = sensor["id"]
+            key = f"temperature_sensor_{sensor_id}"
+            component = self._sensor(key, "Temperature", "°C", "temperature")
+            component["unique_id"] = f"ahead_{self.house_id}_{key}"
+            children.append({
+                "identifiers": [f"{identifier}_{key}"],
+                "name": sensor_id.replace("_", " ").title(),
+                "via_device": identifier,
+                "components": {key: component},
             })
         for actuator in self._hydronic.values():
             name = actuator.key
@@ -418,8 +426,6 @@ class MqttHouse:
 
     def publish_state(self, client, sample: Sample) -> None:
         readings = {
-            **{f"zone_{name}": value for name, value in sample.observation.indoor_c.items()
-               if self.scenario.house.zones[name].expose_sensor},
             "outdoor": sample.observation.outdoor_c,
             "electricity": sample.electricity_kwh,
             "gas": sample.gas_kwh,
@@ -430,6 +436,8 @@ class MqttHouse:
                if self.scenario.house.sources[name].report_heat
                and self.scenario.house.sources[name].direct_zone is None},
         }
+        readings.update({f"temperature_sensor_{name}": item["temperature_c"]
+                         for name, item in self.scenario.temperature_sensor_readings(sample.end_s).items()})
         if self._separate_meter:
             totals = self.scenario.house.totals
             rate = sample.observation.heat_pump_price_kwh

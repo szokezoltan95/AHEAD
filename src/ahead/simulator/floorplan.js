@@ -26,7 +26,7 @@ const iconPaths = {
 };
 const sectionIcons = {
     levels:"layers",rooms:"room",surfaces:"plan",windows:"window",circuits:"pipe",emitters:"radiator",
-    sources:"boiler",outdoor_units:"fan",solar:"sun",weather:"sun",events:"activity"
+    sources:"boiler",outdoor_units:"fan",solar:"sun",temperature_sensors:"thermometer",weather:"sun",events:"activity"
 };
 function icon(name) {
     const graphic = svg("svg", {viewBox:"0 0 24 24",class:"icon","aria-hidden":"true"});
@@ -268,7 +268,7 @@ function paint(canvas,plan,rooms,floor,box,liveSources=null) {
                 class:"plan-equipment","data-node":name});
             const sourcePreset = drawing ? find("sources",node.equipment)?.preset : liveSources[node.equipment]?.preset;
             const symbol = icon(node.kind === "sources" && sourcePreset?.includes("split") ? "fan" :
-                {emitters:"radiator",sources:"boiler",circuits:"tank"}[node.kind]);
+                {emitters:"radiator",sources:"boiler",circuits:"tank",temperature_sensors:"thermometer"}[node.kind]);
             for (const [key,value] of Object.entries({x:x-7,y:y-7,width:14,height:14,class:"icon plan-device-icon"})) symbol.setAttribute(key,value);
             const label = textAt(node.x+.24,node.y-.21,human(node.equipment),"plan-meta");
             const source = node.kind === "sources"
@@ -702,16 +702,18 @@ function equipmentDialog(point,nodeId) {
     const draft = current ? {...current} : {kind:"emitters",equipment:"",level:planFloor,height_mm:150,...point};
     let preset = "panel_radiator", radiatorId = unique("radiator",list("emitters").map(row => row.id));
     let sourcePreset = "gas_on_off", sourceId = unique("heater",list("sources").map(row => row.id));
+    let sensorId = unique("temperature_sensor",list("temperature_sensors").map(row => row.id));
     let circuit = list("circuits")[0]?.id || "", room = containingRoom(point);
     function show() {
         const fields = [
             input("Equipment type",draft.kind,next => { draft.kind=next; draft.equipment=""; },
-                ["emitters","sources","circuits"],false,show),
+                ["emitters","sources","circuits","temperature_sensors"],false,show),
             input("Equipment",draft.equipment,next => draft.equipment=next,
                 ["",...list(draft.kind).map(row => row.id),
-                 ...({emitters:["+ New radiator"],sources:["+ New heat source"]}[draft.kind] || [])],
+                 ...({emitters:["+ New radiator"],sources:["+ New heat source"],
+                     temperature_sensors:["+ New temperature sensor"]}[draft.kind] || [])],
                 false,show),
-            input("Connection height above floor (mm)",draft.height_mm,next => draft.height_mm=next)
+            input("Height above floor (mm)",draft.height_mm,next => draft.height_mm=next)
         ];
         if (draft.equipment === "+ New radiator") fields.push(
             input("Radiator ID",radiatorId,next => radiatorId=next),
@@ -723,6 +725,11 @@ function equipmentDialog(point,nodeId) {
             input("Heat source ID",sourceId,next => sourceId=next),
             input("Preset",sourcePreset,next => sourcePreset=next,["gas_on_off","gas_modulating","air_to_water"]),
             input("Water circuit",circuit,next => circuit=next,list("circuits").map(row => row.id)));
+        if (draft.equipment === "+ New temperature sensor") fields.push(
+            input("Sensor ID",sensorId,next => sensorId=next),
+            input("Room",room,next => room=next,list("rooms").map(row => row.id)));
+        const placedSensor = draft.kind === "temperature_sensors" ? find("temperature_sensors",draft.equipment) : null;
+        if (placedSensor) fields.push(input("Room",room,next => room=next,list("rooms").map(row => row.id)));
         const placedSource = draft.kind === "sources" ? find("sources",draft.equipment) : null;
         if (placedSource?.preset === "indoor_split") fields.push(input("A/C facing (° clockwise from north)",
             draft.facing_deg ?? roomCenterFacing(draft,placedSource.room || room),
@@ -757,6 +764,23 @@ function equipmentDialog(point,nodeId) {
                 list("sources").push({id:sourceId,preset:sourcePreset,circuit});
                 draft.equipment=sourceId;
             }
+            if (draft.equipment === "+ New temperature sensor") {
+                if (!/^[a-zA-Z0-9_-]{1,64}$/.test(sensorId) || find("temperature_sensors",sensorId) || !room) {
+                    return "Enter a unique sensor ID and select a room.";
+                }
+                const position = planData().rooms[room], dimensions = roomMap(project)[room];
+                if (!position || dimensions?.level !== planFloor || point.x < position.x || point.y < position.y ||
+                    point.x > position.x+dimensions.length_m || point.y > position.y+dimensions.width_m) {
+                    return "Place the sensor inside its selected room.";
+                }
+                list("temperature_sensors").push({id:sensorId,preset:"room_sensor",room});
+                draft.kind="temperature_sensors";
+                draft.equipment=sensorId;
+            }
+            const existingSensor = draft.kind === "temperature_sensors" ? find("temperature_sensors",draft.equipment) : null;
+            if (existingSensor && room !== existingSensor.room) {
+                existingSensor.room = room;
+            }
             if (current) Object.assign(current,draft);
             else addPoint(point,draft);
         },[
@@ -766,6 +790,8 @@ function equipmentDialog(point,nodeId) {
                 ? [extraButton("Advanced device settings",() => editObject("emitters",draft.equipment))] : []),
             ...(current && draft.kind === "circuits" && find("circuits",draft.equipment)
                 ? [extraButton("Advanced circuit settings",() => editObject("circuits",draft.equipment))] : []),
+            ...(current && draft.kind === "temperature_sensors" && find("temperature_sensors",draft.equipment)
+                ? [extraButton("Sensor settings",() => editObject("temperature_sensors",draft.equipment))] : []),
             ...(current ? [extraButton("Remove from plan",() => {
             if (Object.values(planData().pipes).some(pipe => [pipe.first,pipe.last].includes(nodeId))) {
                 $("plan-dialog-error").textContent = "Remove the connected pipes first."; return;

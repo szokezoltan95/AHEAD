@@ -98,10 +98,10 @@ class Console:
 
     def record(self, scenario, sample, diagnostic, *, archive=False):
         state = scenario.house.diagnostics()
+        state["temperature_sensors"] = scenario.temperature_sensor_readings(sample.end_s)
         for name, room in state["rooms"].items():
             zone = scenario.house.zones[name]
-            room["reported_c"] = sample.observation.indoor_c[name] if zone.expose_sensor else None
-            room["reported_to_ha"] = zone.expose_sensor
+            room["target_c"] = zone.setpoint_c
             room["target_c"] = zone.setpoint_c
         if diagnostic:
             for surface in diagnostic["surfaces"].values():

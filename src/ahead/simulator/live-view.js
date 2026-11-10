@@ -3,13 +3,14 @@
 const liveReadingKeys = {
     heat_exchangers:"heat_kw", rooms:"air_c", circuits:"supply_c", emitters:"total_heat_kw",
     sources:"heat_kw", outdoor_units:"electrical_kw", surfaces:"irradiance_kw_m2",
-    pipes:"flow_l_min", solar:"electrical_kw",
+    pipes:"flow_l_min", solar:"electrical_kw", temperature_sensors:"temperature_c",
 };
 const equipmentGroups = {
     sources:"Heat sources", outdoor_units:"Outdoor units", circuits:"Water circuits",
     emitters:"Radiators and floor heating", heat_exchangers:"Heat exchangers", solar:"Solar",
+    temperature_sensors:"Temperature sensors",
 };
-const readingUnits = {rooms:"°C", circuits:"°C", surfaces:"kW/m²", pipes:"L/min"};
+const readingUnits = {rooms:"°C", circuits:"°C", temperature_sensors:"°C", surfaces:"kW/m²", pipes:"L/min"};
 let liveState, liveFloor = "", liveFloorsKey = "", liveGeometryKey = "", inventoryKey = "";
 let livePlanItems = [], liveEquipmentCards = [];
 let heatmapEnabled = true;
@@ -309,7 +310,7 @@ function drawLiveDashboard(state) {
     $("live-equipment-count").textContent = liveEquipmentCards.length;
     for (const {group,name,card,where,reading,status} of liveEquipmentCards) {
         const item = state[group][name], id = `${group}/${name}`;
-        const floor = placement.get(id), room = item.zone;
+        const floor = placement.get(id), room = item.zone || item.room;
         where.textContent = [room && human(room), floor ? human(floor) : "Unplaced"].filter(Boolean).join(" · ");
         card.setAttribute("aria-pressed",selected === id);
         const [mode,label] = equipmentStatus(group,item);

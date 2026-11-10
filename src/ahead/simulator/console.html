@@ -173,6 +173,7 @@ const human = key => key.replaceAll("_", " ").replace(/^./, letter => letter.toU
 const names = {
     levels:"Levels",rooms:"Rooms",surfaces:"Walls, floors, ceilings and roof faces",
     layers:"Construction and insulation layers",windows:"Windows",circuits:"Water circuits and tanks",
+    temperature_sensors:"Temperature sensors",
     heat_exchangers:"Heat exchangers",emitters:"Radiators and underfloor heating",sources:"Boilers, heat pumps and indoor units",
     outdoor_units:"Split system outdoor units",solar:"Solar thermal and PV",weather:"Weather and tariffs",
     events:"Occupancy events and faults"
@@ -183,7 +184,7 @@ const references = {
 };
 let catalogue, project, selected = "", trendPath = "", lastTime = -1, schemaKey = "";
 let history = new Map();
-const visibleGroups = ["outdoor_units","sources","circuits","heat_exchangers","emitters","rooms","surfaces","solar","pipes"];
+const visibleGroups = ["outdoor_units","sources","circuits","heat_exchangers","emitters","temperature_sensors","rooms","surfaces","solar","pipes"];
 
 async function api(path, project) {
     const options = project === undefined ? {} : {

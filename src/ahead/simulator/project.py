@@ -108,6 +108,10 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
     rectangles = derive_envelope(plan, rows)
     air_openings = compile_air_openings(plan, rows, rectangles)
     room_rows = rows["rooms"]
+    for sensor_id, sensor in rows["temperature_sensors"].items():
+        _reference(sensor, "room", room_rows)
+        if sensor["noise_c"] < 0:
+            raise ValueError(f"Temperature sensor {sensor_id} noise must be non-negative")
     surfaces = rows["surfaces"]
     layers = defaultdict(list)
     windows = defaultdict(list)
@@ -340,6 +344,27 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
         for name, row in rows["heat_exchangers"].items()
     }
     pipes, nodes = compile_pipes(plan, rows, rectangles)
+    temperature_sensors = []
+    for node_id, node in nodes.items():
+        if node.get("kind") != "temperature_sensors":
+            continue
+        sensor_id = node["equipment"]
+        sensor = rows["temperature_sensors"][sensor_id]
+        room_name = _reference(sensor, "room", room_rows)
+        room = room_rows[room_name]
+        position = plan.get("rooms", {}).get(room_name)
+        if not position or room["level"] != node["level"]:
+            raise ValueError(f"Temperature sensor {sensor_id} must be placed on its room's floor")
+        x_m, y_m = node["x"] - position["x"], node["y"] - position["y"]
+        height = room["height_m"] or rows["levels"][room["level"]]["height_m"]
+        if not (0 <= x_m <= room["length_m"] and 0 <= y_m <= room["width_m"]):
+            raise ValueError(f"Temperature sensor {sensor_id} must be placed inside its assigned room")
+        z_m = node.get("height_mm", 150) / 1000
+        if not 0 <= z_m <= height:
+            raise ValueError(f"Temperature sensor {sensor_id} must be placed between floor and ceiling")
+        temperature_sensors.append({"id": sensor_id, "room": room_name, "x_m": x_m, "y_m": y_m,
+                                    "z_m": z_m, "offset_c": sensor["offset_c"],
+                                    "noise_c": sensor["noise_c"]})
     paths = pipe_paths(pipes, nodes, emitters, {source.name: source for source in sources})
     pipe_network = PipeNetwork(
         pipes, paths,
@@ -528,7 +553,8 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
                        radiant_opening_m2=radiation, dhw_draw_l_min=draws)
 
     scenario = Scenario(house, profile, step, duration, period or None, tuple(faults),
-                        settings["noise_c"], settings["seed"], environment)
+                        settings["noise_c"], settings["seed"], environment,
+                        tuple(temperature_sensors))
     return scenario, diagnostics
 
 

@@ -51,10 +51,26 @@ class Scenario:
     sensor_noise_c: float
     seed: int
     environment: Callable[[int, Conditions], Conditions] | None = None
+    temperature_sensors: tuple[dict, ...] = ()
 
     @property
     def setpoints_c(self) -> dict[str, float]:
         return {name: zone.setpoint_c for name, zone in self.house.zones.items() if zone.conditioned}
+
+    def temperature_sensor_readings(self, elapsed_s: int | None = None) -> dict[str, dict]:
+        elapsed = self.house.elapsed_s if elapsed_s is None else elapsed_s
+        readings = {}
+        for sensor in self.temperature_sensors:
+            value = self.house.air_temperature_at(sensor["room"], sensor["x_m"],
+                                                 sensor["y_m"], sensor["z_m"])
+            if sensor["noise_c"]:
+                identity = sum(map(ord, sensor["id"]))
+                value += Random(self.seed + elapsed + identity).gauss(0, sensor["noise_c"])
+            readings[sensor["id"]] = {
+                "room": sensor["room"], "temperature_c": value + sensor["offset_c"],
+                "x_m": sensor["x_m"], "y_m": sensor["y_m"], "z_m": sensor["z_m"],
+            }
+        return readings
 
     def run(self, controller: Controller, *, continuous: bool = False) -> Iterator[Sample]:
         if self.house.elapsed_s:
