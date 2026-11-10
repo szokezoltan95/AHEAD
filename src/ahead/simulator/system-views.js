@@ -15,6 +15,9 @@ for (const button of document.querySelectorAll("[data-live-view]")) {
 }
 $("live-circuit").onchange = () => { systemCircuit = $("live-circuit").value; drawNetworkViews(liveState); };
 $("heat-filter").onchange = () => drawNetworkViews(liveState);
+for (const input of document.querySelectorAll("[data-pipe-metric]")) {
+    input.onchange = () => drawNetworkViews(liveState);
+}
 $("live-fit-circuit").onclick = () => {
     const control = $("live-fit-circuit");
     const pressed = control.getAttribute("aria-pressed") !== "true";
@@ -53,108 +56,167 @@ function circuitGraph(state,circuit) {
     return {nodes,edges,inferred:true};
 }
 
-function diagramColumns(graph) {
+function pipeMetrics() {
+    return Object.fromEntries([...document.querySelectorAll("[data-pipe-metric]")]
+        .map(input => [input.dataset.pipeMetric,input.checked]));
+}
+
+function radialNetworkLayout(graph) {
     const {nodes,edges} = graph;
-    const connections = new Map([...nodes.keys()].map(key => [key,new Set()]));
-    for (const edge of edges) {
-        connections.get(edge.first).add(edge.last);
-        connections.get(edge.last).add(edge.first);
+    const links = new Map([...nodes.keys()].map(key => [key,[]]));
+    const unique = new Set();
+    for (const edge of edges.filter(edge => edge.run === "supply")) {
+        const pair = [edge.first,edge.last].sort().join("/");
+        if (unique.has(pair)) continue;
+        unique.add(pair);
+        links.get(edge.first)?.push(edge.last);
+        links.get(edge.last)?.push(edge.first);
     }
-    const roots = [...nodes].filter(([,node]) => node.group === "sources").map(([key]) => key);
-    if (!roots.length) {
-        const circuit = [...nodes].find(([,node]) => node.group === "circuits");
-        if (circuit) roots.push(circuit[0]);
-    }
-    const depths = new Map(), columns = [];
-    const insert = (key,depth) => {
-        depths.set(key,depth);
-        (columns[depth] ??= []).push(key);
-    };
-    for (const key of roots) insert(key,0);
-    for (const key of [...roots,...nodes.keys()]) {
-        if (!depths.has(key)) insert(key,0);
-        const queue = [key];
-        for (let index=0;index<queue.length;index++) {
-            const current = queue[index];
-            for (const next of connections.get(current)) {
-                if (depths.has(next)) continue;
-                insert(next,depths.get(current)+1);
-                queue.push(next);
-            }
+    if (!unique.size) {
+        for (const edge of edges) {
+            const pair = [edge.first,edge.last].sort().join("/");
+            if (unique.has(pair)) continue;
+            unique.add(pair);
+            links.get(edge.first)?.push(edge.last);
+            links.get(edge.last)?.push(edge.first);
         }
     }
-    return columns;
+    const root = [...nodes].find(([,node]) => node.group === "sources")?.[0] ||
+        [...nodes].find(([,node]) => node.group === "circuits")?.[0] || nodes.keys().next().value;
+    const children = new Map([...nodes.keys()].map(key => [key,[]]));
+    const parent = new Map([[root,null]]), queue = [root];
+    for (let index=0;index<queue.length;index++) {
+        const current = queue[index];
+        const neighbors = (links.get(current) || []).slice().sort((a,b) => a.localeCompare(b));
+        for (const next of neighbors) {
+            if (parent.has(next)) continue;
+            parent.set(next,current);
+            children.get(current).push(next);
+            queue.push(next);
+        }
+    }
+    // Any disconnected equipment remains visible as a separate spoke.
+    for (const key of nodes.keys()) {
+        if (parent.has(key)) continue;
+        parent.set(key,root);
+        children.get(root).push(key);
+    }
+    const leafCount = key => children.get(key).length ?
+        children.get(key).reduce((total,child) => total+leafCount(child),0) : 1;
+    const relative = new Map([[root,{x:0,y:0}]]);
+    const radius = 260;
+    const placeChildren = (key,start,span,depth,parentAngle=null) => {
+        const descendants = children.get(key), weights = descendants.map(leafCount);
+        let cursor = start;
+        descendants.forEach((child,index) => {
+            const sector = span * weights[index] / weights.reduce((a,b) => a+b,0);
+            const angle = descendants.length === 1 && parentAngle !== null ? parentAngle : cursor+sector/2;
+            relative.set(child,{x:Math.cos(angle)*radius*(depth+1),y:Math.sin(angle)*radius*(depth+1)});
+            placeChildren(child,cursor,sector,depth+1,angle);
+            cursor += sector;
+        });
+    };
+    placeChildren(root,-Math.PI,Math.PI*2,0);
+    const bounds = [...relative.values()];
+    const extentX = Math.max(0,...bounds.map(point => Math.abs(point.x)));
+    const extentY = Math.max(0,...bounds.map(point => Math.abs(point.y)));
+    const padding = 180;
+    const width = Math.max(1100,extentX*2+padding*2);
+    const height = Math.max(760,extentY*2+padding*2);
+    const positions = new Map([...relative].map(([key,point]) =>
+        [key,{x:width/2+point.x,y:height/2+point.y}]));
+    return {root,positions,width,height,children};
+}
+
+function networkEdgeGeometry(first,last,run,firstGroup,lastGroup) {
+    const dx=last.x-first.x, dy=last.y-first.y, length=Math.hypot(dx,dy)||1;
+    const ux=dx/length, uy=dy/length, nx=-uy, ny=ux;
+    const clip=(group)=> group === "junction" ? 11 :
+        Math.min(96/Math.max(Math.abs(ux),.01),46/Math.max(Math.abs(uy),.01));
+    const startRadius=clip(firstGroup), endRadius=clip(lastGroup), side=run === "supply" ? -9 : 9;
+    const start={x:first.x+ux*startRadius+nx*side,y:first.y+uy*startRadius+ny*side};
+    const end={x:last.x-ux*endRadius+nx*side,y:last.y-uy*endRadius+ny*side};
+    const middle=(Math.abs(end.x-start.x)>=Math.abs(end.y-start.y)) ?
+        {x:(start.x+end.x)/2,y:start.y} : {x:start.x,y:(start.y+end.y)/2};
+    const other=(middle.x===start.x) ? {x:end.x,y:middle.y} : {x:middle.x,y:end.y};
+    const points=`${start.x},${start.y} ${middle.x},${middle.y} ${other.x},${other.y} ${end.x},${end.y}`;
+    const elbow={x:(middle.x+other.x)/2,y:(middle.y+other.y)/2};
+    const label={x:elbow.x+nx*(run === "supply" ? -36 : 36),
+        y:elbow.y+ny*(run === "supply" ? -36 : 36)};
+    return {points,start,end,label,angle:Math.atan2(other.y-middle.y,other.x-middle.x)*180/Math.PI};
+}
+
+function nodeMetricLines(group,item,metrics) {
+    const lines=[];
+    if (metrics.power) {
+        const power=group === "emitters" ? item.total_heat_kw :
+            group === "sources" ? item.heat_kw : group === "heat_exchangers" ? item.heat_kw : null;
+        if (Number.isFinite(power)) lines.push(`Heat ${format(power)} kW`);
+    }
+    if (metrics.flow) {
+        const flow=item.flow_l_min ?? item.boiler_flow_l_min;
+        if (Number.isFinite(flow)) lines.push(`Flow ${format(flow)} L/min`);
+    }
+    if (metrics.temperature) {
+        const temperature=group === "emitters" ? item.radiator_c ?? item.supply_c :
+            item.water_c ?? item.boiler_water_c ?? item.supply_c;
+        if (Number.isFinite(temperature)) lines.push(`Water ${format(temperature)} °C`);
+    }
+    return lines;
 }
 
 function buildPiping(graph,state) {
-    const {nodes,edges,inferred} = graph;
-    const columns = diagramColumns(graph), positions = new Map();
-    const rows = Math.max(1,...columns.map(column => column.length));
-    const height = Math.max(135,rows*79+28);
-    let left = 26;
-    for (const keys of columns) {
-        const half = keys.some(key => nodes.get(key).group !== "junction") ? 58 : 10;
-        for (const [index,key] of keys.entries()) {
-            positions.set(key,{x:left+half,y:(index+.5)*height/keys.length});
-        }
-        left += 2*half+45;
-    }
-    const width = Math.max(350,left);
-    const graphic = svg("svg",{class:"live-network",width,height,viewBox:`0 0 ${width} ${height}`,
-        role:"group","aria-label":"Water circuit connections"});
-    diagramLines = [];
-    const tracks = new Map();
+    const {nodes,edges,inferred} = graph, layout=radialNetworkLayout(graph);
+    const {positions,width,height}=layout;
+    const graphic=svg("svg",{class:"live-network",width,height,viewBox:`0 0 ${width} ${height}`,
+        role:"group","aria-label":"Radial water circuit diagram"});
+    diagramLines=[];
+    // Draw pipes first so the equipment and junctions sit clearly above them.
     for (const edge of edges) {
-        const first = positions.get(edge.first), last = positions.get(edge.last);
-        const offset = edge.run === "supply" ? -7 : 7;
-        const direction = last.x >= first.x ? 1 : -1;
-        const ax = first.x + (nodes.get(edge.first).group === "junction" ? 0 : direction*58);
-        const bx = last.x - (nodes.get(edge.last).group === "junction" ? 0 : direction*58);
-        const ay = first.y+offset, by = last.y+offset;
-        const pair = [edge.first,edge.last].sort().join("/");
-        const rank = tracks.get(pair) ?? tracks.size;
-        tracks.set(pair,rank);
-        const elbow = first.x === last.x ? first.x+70+offset :
-            (ax+bx)/2 + (rank%5-2)*4+offset;
-        const points = `${ax},${ay} ${elbow},${ay} ${elbow},${by} ${bx},${by}`;
-        const path = svg("polyline",{points,class:`plan-pipe ${edge.run}`});
-        const target = svg("polyline",{points,class:"pipe-target"});
-        const group = inferred ? svg("g",{class:"live-pipe-item"}) :
+        const first=positions.get(edge.first),last=positions.get(edge.last);
+        if (!first||!last) continue;
+        const geometry=networkEdgeGeometry(first,last,edge.run,
+            nodes.get(edge.first).group,nodes.get(edge.last).group);
+        const path=svg("polyline",{points:geometry.points,class:`plan-pipe ${edge.run}`});
+        const target=svg("polyline",{points:geometry.points,class:"pipe-target"});
+        const group=inferred ? svg("g",{class:"live-pipe-item"}) :
             livePlanItem("pipes",edge.id,"live-pipe-item",path,target);
         if (inferred) group.append(path);
-        const arrow = svg("path",{d:"M-3 -3 3 0-3 3",class:`network-arrow ${edge.run}`});
-        const label = svg("text",{x:(elbow+bx)/2,y:by+(offset<0 ? -5 : 12),"text-anchor":"middle",class:"network-flow"});
+        const arrow=svg("path",{d:"M-5 -5 5 0-5 5",class:`network-arrow ${edge.run}`});
+        const label=svg("text",{x:geometry.label.x,y:geometry.label.y,
+            "text-anchor":"middle",class:"network-flow"});
         group.append(arrow,label);
         graphic.append(group);
-        diagramLines.push({edge,group,arrow,label,x:(elbow+bx)/2,y:by,forward:Math.sign(bx-elbow) || direction});
+        diagramLines.push({edge,group,arrow,label,x:(geometry.start.x+geometry.end.x)/2,
+            y:(geometry.start.y+geometry.end.y)/2,angle:geometry.angle,forward:1});
     }
     for (const [key,node] of nodes) {
-        const {x,y} = positions.get(key);
+        const {x,y}=positions.get(key);
         if (node.group === "junction") {
-            const junction = svg("g");
-            for (const [run,offset] of [["supply",-7],["return",7]]) {
-                if (edges.some(edge => edge.run === run && (edge.first === key || edge.last === key))) {
-                    junction.append(svg("circle",{cx:x,cy:y+offset,r:3.6,class:`network-junction ${run}`}));
+            const junction=svg("g");
+            for (const [run,offset] of [["supply",-9],["return",9]]) {
+                if (edges.some(edge => edge.run===run&&(edge.first===key||edge.last===key))) {
+                    junction.append(svg("circle",{cx:x,cy:y+offset,r:5,class:`network-junction ${run}`}));
                 }
             }
-            const title = svg("title"); title.textContent = human(node.name); junction.append(title);
-            graphic.append(junction);
-            continue;
+            const title=svg("title"); title.textContent=human(node.name); junction.append(title);
+            graphic.append(junction); continue;
         }
-        const rect = svg("rect",{x:x-58,y:y-20,width:116,height:40,rx:7,class:"network-node"});
-        const label = svg("text",{x:x-32,y:y-3,class:"network-title"});
-        const reading = svg("text",{x:x-32,y:y+12,class:"network-reading"});
-        const item = state[node.group]?.[node.name] || {};
-        const config = state.configured_objects?.[node.group]?.[node.name];
-        const symbol = icon(equipmentIcon(node.group,item,config));
-        for (const [key,value] of Object.entries({x:x-51,y:y-7,width:14,height:14,class:"icon plan-device-icon"})) {
-            symbol.setAttribute(key,value);
+        const rect=svg("rect",{x:x-96,y:y-46,width:192,height:92,rx:10,class:"network-node"});
+        const label=svg("text",{x:x-70,y:y-22,class:"network-title"});
+        const reading=svg("text",{x:x-70,y:y-3,class:"network-reading"});
+        const item=state[node.group]?.[node.name]||{};
+        const config=state.configured_objects?.[node.group]?.[node.name];
+        const symbol=icon(equipmentIcon(node.group,item,config));
+        for (const [attribute,value] of Object.entries({x:x-86,y:y-28,width:18,height:18,class:"icon plan-device-icon"})) {
+            symbol.setAttribute(attribute,value);
         }
-        const name = human(node.name);
-        label.textContent = name.length > 15 ? name.slice(0,14)+"…" : name;
+        const name=human(node.name);
+        label.textContent=name.length>22?name.slice(0,21)+"…":name;
         graphic.append(livePlanItem(node.group,node.name,"network-device",rect,symbol,label,reading));
     }
     $("live-piping-diagram").replaceChildren(graphic);
+    graphic.dataset.root=layout.root;
 }
 
 function drawPiping(state) {
@@ -178,11 +240,12 @@ function drawPiping(state) {
     }
     const graph = circuitGraph(state,systemCircuit);
     $("live-piping-description").textContent = graph.inferred ?
-        "Connection schematic based on circuit assignments. This circuit has no drawn pipe routes." :
-        "Drawn supply and return routes. Dots mark connected junctions; line crossings without a dot are separate.";
+        "Radial connection view inferred from circuit assignments; this circuit has no drawn pipe routes." :
+        "Radial view of the drawn supply and return network. The heat source is centered; junction dots show connected branches.";
     const key = JSON.stringify([systemCircuit,[...graph.nodes],graph.edges,graph.inferred]);
     if (key !== pipingKey) { pipingKey=key; buildPiping(graph,state); }
-    for (const {edge,group,arrow,label,x,y,forward} of diagramLines) {
+    const metrics=pipeMetrics();
+    for (const {edge,group,arrow,label,x,y,angle,forward} of diagramLines) {
         const pipe = state.pipes?.[edge.id], emitter = state.emitters?.[edge.emitter];
         const flow = pipe?.flow_l_min ?? emitter?.flow_l_min;
         const active = Number.isFinite(flow) && flow > .005;
@@ -196,9 +259,30 @@ function drawPiping(state) {
             group.setAttribute("aria-pressed",pressed);
         }
         const orientation = (graph.inferred ? edge.run === "supply" : pipe?.flow_from === edge.first) ? forward : -forward;
-        arrow.setAttribute("transform",`translate(${x} ${y}) scale(${orientation} 1)`);
+        arrow.setAttribute("transform",`translate(${x} ${y}) rotate(${angle}) scale(${orientation} 1)`);
         arrow.style.display = active && (graph.inferred || pipe?.flow_from) ? "" : "none";
-        label.textContent = active ? withUnit(flow,"L/min") : "";
+        const inlet = pipe ? pipe.inlet_c :
+            (edge.run === "supply" ? emitter?.supply_c : emitter?.return_c);
+        const outlet = pipe ? pipe.outlet_c : inlet;
+        const values=[];
+        if (metrics.flow) values.push(Number.isFinite(flow) ? `${format(flow)} L/min` : "Flow —");
+        if (metrics.temperature) values.push(pipe && !(flow > .005) && Number.isFinite(pipe.water_c) ?
+            `Water ${format(pipe.water_c)} °C` : Number.isFinite(inlet) && Number.isFinite(outlet) ?
+            `${format(inlet)} → ${format(outlet)} °C` : Number.isFinite(pipe?.water_c) ?
+                `Water ${format(pipe.water_c)} °C` : "Temperature —");
+        if (metrics.power && pipe) values.push(`Room heat ${format(pipe.heat_loss_kw)} kW`);
+        if (metrics.storage && pipe) values.push(`Stored ${format(pipe.stored_heat_kwh)} kWh`);
+        label.replaceChildren();
+        values.forEach((value,index) => {
+            const line=svg("tspan",{x:label.getAttribute("x"),dy:index?13:0});
+            line.textContent=value; label.append(line);
+        });
+        label.setAttribute("aria-label",values.join("; "));
+        if (!graph.inferred) {
+            const details=`${human(edge.id)} · ${values.join(" · ")}`;
+            group.firstElementChild.textContent=details;
+            group.setAttribute("aria-label",details);
+        }
     }
     for (const node of $("live-piping-diagram").querySelectorAll(".network-device")) {
         const [group,name] = node.dataset.liveItem.split("/");
@@ -206,10 +290,16 @@ function drawPiping(state) {
         const pressed = selected === node.dataset.liveItem;
         node.classList.toggle("selected",pressed);
         node.setAttribute("aria-pressed",pressed);
-        const reading = item ? liveReading(group,item) : "—";
-        node.querySelector(".network-reading").textContent = reading;
-        node.firstElementChild.textContent = `${human(name)} · ${reading}`;
-        node.setAttribute("aria-label",node.firstElementChild.textContent);
+        const reading=node.querySelector(".network-reading");
+        const lines=nodeMetricLines(group,item||{},metrics);
+        reading.replaceChildren();
+        lines.forEach((value,index) => {
+            const line=svg("tspan",{x:reading.getAttribute("x"),dy:index?14:0});
+            line.textContent=value; reading.append(line);
+        });
+        const title=node.firstElementChild;
+        title.textContent=`${human(name)}${lines.length?` · ${lines.join(" · ")}`:""}`;
+        node.setAttribute("aria-label",title.textContent);
     }
 }
 

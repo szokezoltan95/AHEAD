@@ -27,12 +27,17 @@
         </div>
         <div id="live-piping-view">
             <div class="live-map-tools"><label id="live-circuit-control">Circuit <select id="live-circuit"></select></label>
-                <button id="live-fit-circuit" data-icon="fit" aria-pressed="false" hidden>Fit diagram</button></div>
+                <button id="live-fit-circuit" data-icon="fit" aria-pressed="false" hidden>Fit diagram</button>
+                <label><input type="checkbox" data-pipe-metric="flow" checked> Flow</label>
+                <label><input type="checkbox" data-pipe-metric="temperature" checked> Water temperature</label>
+                <label><input type="checkbox" data-pipe-metric="power" checked> Heat power</label>
+                <label><input type="checkbox" data-pipe-metric="storage"> Pipe stored heat</label></div>
             <p id="live-piping-description" class="muted"></p>
             <div class="live-piping-scroll" id="live-piping-diagram"></div>
             <div id="live-system-legend" class="live-legend" hidden>
                 <span class="pipe-supply"><i></i> Supply</span><span class="pipe-return"><i></i> Return</span>
                 <span><i class="legend-idle"></i> No measured flow</span><span>● Junction</span>
+                <span>Boiler centered · branches follow the circuit topology</span>
             </div>
         </div>
         <div id="live-heat-view" hidden>

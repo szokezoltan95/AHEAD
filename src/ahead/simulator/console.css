@@ -179,20 +179,21 @@ dialog .toolbar { margin-bottom: 0; }
 .live-map-tools select { width: auto; }
 .live-map-tools .air-slice-control input { width: 8rem; padding: 0; }
 #live-piping-description { margin: .5rem 0; font-size: .8rem; }
-.live-piping-scroll { overflow: auto; max-height: clamp(300px,54vh,570px);
+.live-piping-scroll { overflow: auto; max-height: clamp(420px,68vh,760px);
     border-radius: 8px; background: var(--soft); }
 .live-network { display: block; min-width: 100%; }
 .fit-network .live-network { width: 100%; height: auto; }
 .network-node { fill: var(--panel); stroke: var(--muted); stroke-width: 1.4; }
 .network-device.selected .network-node,.network-device:hover .network-node,.network-device:focus-visible .network-node { stroke: var(--blue); stroke-width: 2.5; }
-.network-title { font-size: 11px; font-weight: 650; }
-.network-reading { font-size: 10px; fill: var(--muted); }
+.network-title { font-size: 13px; font-weight: 650; }
+.network-reading { font-size: 11px; fill: var(--muted); }
 .network-junction.supply { fill: var(--supply); }
 .network-junction.return { fill: var(--return); }
 .network-arrow.supply { fill: var(--supply); }
 .network-arrow.return { fill: var(--return); }
 .network-arrow,.network-flow { pointer-events: none; }
-.network-flow { font-size: 9px; font-weight: 650; paint-order: stroke; stroke: var(--soft); stroke-width: 2px; }
+.network-flow { font-size: 10px; font-weight: 650; paint-order: stroke; stroke: var(--soft); stroke-width: 2.5px; }
+.network-temperature { font-size: 9px; font-weight: 500; fill: var(--muted); }
 .live-network .pipe-target { fill: none; }
 #live-heat-links { display: grid; gap: .35rem; max-height: clamp(300px,54vh,570px); overflow-y: auto; }
 .heat-link { display: grid; grid-template-columns: minmax(0,1fr) minmax(82px,1.2fr) minmax(0,1fr); gap: .35rem; align-items: center;
