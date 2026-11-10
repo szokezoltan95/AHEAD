@@ -173,6 +173,11 @@ class MqttHouse:
 
     def discovery(self) -> dict:
         components = {}
+        # Older versions exposed room averages as zone_* entities on this
+        # device. Device discovery keeps omitted components, so send empty
+        # component configs to explicitly remove those obsolete entities.
+        for zone in self.scenario.house.zones:
+            components[f"zone_{zone}"] = {"platform": "sensor"}
         temperatures = {"outdoor": "Outdoor"}
         if self.scenario.house.water_c is not None and not self.scenario.environment:
             temperatures.update({"supply": "Supply water", "return": "Return water"})
@@ -259,7 +264,6 @@ class MqttHouse:
             children.append({
                 "identifiers": [f"{identifier}_{key}"],
                 "name": sensor_id.replace("_", " ").title(),
-                "via_device": identifier,
                 "components": {key: component},
             })
         for actuator in self._hydronic.values():
