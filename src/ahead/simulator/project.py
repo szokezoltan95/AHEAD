@@ -118,6 +118,8 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
     for row in rows["windows"].values():
         surface = _reference(row, "surface", surfaces)
         _positive(row["area_m2"], row["u_w_m2k"])
+        if not isfinite(row.get("area_heat_capacity_kwh_m2k", 0.0)) or row.get("area_heat_capacity_kwh_m2k", 0.0) < 0:
+            raise ValueError("Opening heat capacity must be finite and non-negative")
         _fraction(row["shade"], row["solar_transmittance"], row["glazing_fraction"])
         windows[surface].append(row)
 
@@ -157,6 +159,10 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
             layer["thickness_m"] * layer["density_kg_m3"] * layer["heat_capacity_j_kgk"]
             for layer in layers[name]
         ) * opaque / 3_600_000
+        material_mass += sum(
+            item["area_m2"] * item.get("area_heat_capacity_kwh_m2k", 0.0)
+            for item in windows[name]
+        )
         azimuth = (row["azimuth_deg"] + settings["orientation_deg"]) % 360
         surface_info[name] = {
             "room": room, "adjacent_room": row["adjacent_room"] or None, "boundary": boundary,

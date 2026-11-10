@@ -204,13 +204,18 @@ function paint(canvas,plan,rooms,floor,box,liveSources=null) {
                 const ending = {...first,[axis]:middle+opening.width/2};
                 const type = opening.type || "window";
                 canvas.append(line(beginning,ending,{class:"plan-opening plan-opening-"+type}));
-                if (type === "door") {
-                    const openness = (100-Math.max(0,Math.min(100,opening.openness_pct ?? 0)))*Math.PI/200;
-                    let dx = Math.cos(openness)*opening.width, dy = Math.sin(openness)*opening.width;
-                    if (side === "south") dy *= -1;
-                    if (side === "east") [dx,dy] = [-dy,dx];
-                    if (side === "west") [dx,dy] = [dy,dx];
-                    canvas.append(line(beginning,{x:beginning.x+dx,y:beginning.y+dy},
+                if (type === "door" || type === "entry_door") {
+                    const hingeAtEnd = opening.swing_side === "right";
+                    const hinge = hingeAtEnd ? ending : beginning;
+                    const tangent = axis === "x" ? {x:hingeAtEnd ? -1 : 1,y:0} :
+                        {x:0,y:hingeAtEnd ? -1 : 1};
+                    const inward = side === "north" ? {x:0,y:1} : side === "south" ? {x:0,y:-1} :
+                        side === "east" ? {x:-1,y:0} : {x:1,y:0};
+                    const openness = Math.max(0,Math.min(100,opening.openness_pct ?? 0))*Math.PI/200;
+                    const direction = opening.swing_direction === "out_of_room" ? -1 : 1;
+                    const dx = (tangent.x*Math.cos(openness)+inward.x*direction*Math.sin(openness))*opening.width;
+                    const dy = (tangent.y*Math.cos(openness)+inward.y*direction*Math.sin(openness))*opening.width;
+                    canvas.append(line(hinge,{x:hinge.x+dx,y:hinge.y+dy},
                         {class:"plan-door-leaf"}));
                 }
             }
@@ -446,7 +451,7 @@ function wallDialog(name,side) {
                     opening.type=next;
                     if (next === "window") opening.preset ??= "double_glazed";
                     show();
-                },["window","door","portal"],false,show),
+                },["window","door","portal","entry_door"],false,show),
                 input("Centre from first end (m)",opening.distance,next => opening.distance=next),
                 input("Width (m)",opening.width,next => opening.width=next),
                 input("Height (m)",opening.height,next => opening.height=next));
@@ -456,7 +461,30 @@ function wallDialog(name,side) {
             }
             if (opening.type === "door") {
                 entry.append(input("Door open (%)",opening.openness_pct ?? 0,
-                    next => opening.openness_pct=next));
+                    next => opening.openness_pct=next),
+                    input("Hinge side (viewed from room)",opening.swing_side || "left",next => opening.swing_side=next,
+                        ["left","right"]),
+                    input("Swing direction",opening.swing_direction || "into_room",
+                        next => opening.swing_direction=next,["into_room","out_of_room"]));
+            }
+            if (opening.type === "entry_door") {
+                opening.preset ??= "insulated_entry_door";
+                entry.append(input("Door construction",opening.preset,next => {
+                    opening.preset=next;
+                    const preset = catalogue.presets.windows[next];
+                    opening.u_w_m2k=preset.u_w_m2k;
+                    opening.area_heat_capacity_kwh_m2k=preset.area_heat_capacity_kwh_m2k;
+                    show();
+                },["insulated_entry_door","standard_entry_door","older_entry_door"]),
+                    input("U-value (W/m²K)",opening.u_w_m2k ?? catalogue.presets.windows[opening.preset].u_w_m2k,
+                        next => opening.u_w_m2k=next),
+                    input("Heat capacity (kWh/m²K)",opening.area_heat_capacity_kwh_m2k ??
+                        catalogue.presets.windows[opening.preset].area_heat_capacity_kwh_m2k,
+                        next => opening.area_heat_capacity_kwh_m2k=next),
+                    input("Hinge side (viewed from room)",opening.swing_side || "left",next => opening.swing_side=next,
+                        ["left","right"]),
+                    input("Swing direction",opening.swing_direction || "into_room",
+                        next => opening.swing_direction=next,["into_room","out_of_room"]));
             }
             entry.append(extraButton("Remove opening",() => { wall.openings.splice(index,1); show(); }));
             fields.push(entry);
@@ -477,6 +505,11 @@ function wallDialog(name,side) {
             extraButton("Add portal",() => {
                 wall.openings.push({type:"portal",distance:extent/2,width:Math.min(.9,extent),
                     height:2.0}); show();
+            }),
+            extraButton("Add insulated entry door",() => {
+                wall.openings.push({type:"entry_door",preset:"insulated_entry_door",distance:extent/2,
+                    width:Math.min(.9,extent),height:2.0,u_w_m2k:1.0,
+                    area_heat_capacity_kwh_m2k:.025,swing_side:"left",swing_direction:"into_room"}); show();
             })]);
     }
     show();
