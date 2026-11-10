@@ -1,7 +1,9 @@
 "use strict";
 
 let systemView = "piping", systemCircuit = "", systemCircuitsKey = "", pipingKey = "";
-let diagramLines = [], heatRows = [], heatRowsKey = "";
+let diagramLines = [], diagramNodes = new Map(), diagramBasePositions = new Map();
+let diagramPositions = new Map(), liveNetworkNodes = new Map(), heatRows = [], heatRowsKey = "";
+const diagramLayoutKey = "ahead-piping-layout-v1";
 const systemTabs = ["piping","heat","floor"];
 for (const button of document.querySelectorAll("[data-live-view]")) {
     button.onclick = () => {
@@ -24,6 +26,21 @@ $("live-fit-circuit").onclick = () => {
     control.setAttribute("aria-pressed",pressed);
     $("live-piping-diagram").classList.toggle("fit-network",pressed);
 };
+$("live-reset-layout").onclick = () => {
+    const layouts=readDiagramLayouts();delete layouts[systemCircuit];writeDiagramLayouts(layouts);
+    pipingKey="";drawNetworkViews(liveState);
+};
+
+function readDiagramLayouts() {
+    try {
+        const layouts=JSON.parse(localStorage.getItem(diagramLayoutKey)||"{}");
+        return layouts&&typeof layouts==="object"&&!Array.isArray(layouts)?layouts:{};
+    }
+    catch { return {}; }
+}
+function writeDiagramLayouts(layouts) {
+    try { localStorage.setItem(diagramLayoutKey,JSON.stringify(layouts)); } catch { /* private browsing */ }
+}
 
 function circuitGraph(state,circuit) {
     const plan = state.floorplan;
@@ -36,28 +53,48 @@ function circuitGraph(state,circuit) {
         item.loop === circuit && !item.direct_zone);
     const sourceNode = sources.map(([name]) => Object.entries(plan?.nodes || {})
         .find(([,node]) => node.kind === "sources" && node.equipment === name)?.[0]).find(Boolean);
-    const routeParent = route => {
+    const supplyRoutes=routedEquipmentPaths(state,circuit,"supply");
+    const returnRoutes=routedEquipmentPaths(state,circuit,"return");
+    const tapNodes={supply:new Set(),return:new Set()};
+    for (const [run,routes] of [["supply",supplyRoutes],["return",returnRoutes]]) {
+        const endpoints=Object.entries(routes).map(([name,route])=>[name,route.at(-1)?.[2]]);
+        for (const [name,nodeId] of endpoints) {
+            if (!nodeId) continue;
+            if (Object.entries(routes).some(([other,route])=>other!==name&&
+                route.some(([,first,last])=>first===nodeId||last===nodeId))) tapNodes[run].add(nodeId);
+        }
+    }
+    const tapKey=id=>`shared/${id}`;
+    const routeParent = (route,run) => {
         const pipes = [];
         for (let index=route.length-1;index>=0;index--) {
             const [pipe,first] = route[index];
             pipes.push(pipe);
-            if (nodeInfo(first)) return {id:first,pipes:pipes.reverse()};
+            if (nodeInfo(first)) return {
+                id:tapNodes[run].has(first)?tapKey(first):first,
+                pipes:pipes.reverse(),
+            };
         }
         return {id:null,pipes:pipes.reverse()};
     };
-    const supplyRoutes=routedEquipmentPaths(state,circuit,"supply");
-    const returnRoutes=routedEquipmentPaths(state,circuit,"return");
+    const tapEmitters=new Map();
     for (const [name,item] of Object.entries(state.emitters || {})) {
         if (item.loop !== circuit) continue;
         const supplyRoute=supplyRoutes[name]||[];
         const returnRoute=returnRoutes[name]||[];
-        const supply = routeParent(supplyRoute);
-        const returning = routeParent(returnRoute);
+        const supply = routeParent(supplyRoute,"supply");
+        const returning = routeParent(returnRoute,"return");
         const childId = supplyRoute.at(-1)?.[2] || returnRoute.at(-1)?.[2] ||
             Object.entries(plan?.nodes || {}).find(([,node]) => node.kind === "emitters" && node.equipment === name)?.[0] ||
             `emitter/${name}`;
         const childInfo = nodeInfo(childId) || {group:"emitters",name};
         if (!nodes.has(childId)) nodes.set(childId,childInfo);
+        const isTap=tapNodes.supply.has(childId)||tapNodes.return.has(childId);
+        const targetId=isTap?tapKey(childId):childId;
+        if(isTap){
+            nodes.set(targetId,{group:"junction",name:"Common pipe"});
+            tapEmitters.set(childId,{tap:targetId,emitter:childId,name});
+        }
         const branches = [
             {run:"supply",route:supplyRoute,parent:supply},
             {run:"return",route:returnRoute,parent:returning},
@@ -76,12 +113,17 @@ function circuitGraph(state,circuit) {
                     {group:"circuits",name:circuit}:null);
                 if (info) nodes.set(parentId,info);
             }
-            if (parentId===childId) continue;
+            if (parentId===targetId) continue;
             edges.push({
-                id:`${branch.run}/${parentId}/${childId}`,first:parentId,last:childId,
-                run:branch.run,emitter:name,pipes:branch.parent.pipes,
+                id:`${branch.run}/${parentId}/${targetId}`,first:parentId,last:targetId,
+                run:branch.run,emitter:name,pipes:branch.parent.pipes,sharedTrunk:isTap,
             });
         }
+    }
+    for(const {tap,emitter,name} of tapEmitters.values()) for(const run of ["supply","return"]){
+        if(!edges.some(edge=>edge.run===run&&edge.first===tap&&edge.last===emitter))
+            edges.push({id:`${run}/${tap}/${emitter}`,first:tap,last:emitter,run,emitter:name,
+                pipes:[],virtual:true});
     }
     return {nodes,edges,inferred:!Object.keys(supplyRoutes).length};
 }
@@ -231,11 +273,19 @@ function nodeMetricLines(group,item,metrics) {
 }
 
 function buildPiping(graph,state) {
-    const {nodes,edges,inferred} = graph, layout=radialNetworkLayout(graph);
-    const {positions,width,height}=layout;
+    const {nodes,edges} = graph, layout=radialNetworkLayout(graph);
+    liveNetworkNodes=nodes;
+    const {width,height}=layout;
+    diagramBasePositions=new Map([...layout.positions].map(([key,value])=>[key,{...value}]));
+    const saved=readDiagramLayouts()[systemCircuit]||{};
+    diagramPositions=new Map([...diagramBasePositions].map(([key,value])=>[
+        key,Number.isFinite(saved[key]?.x)&&Number.isFinite(saved[key]?.y)?
+            {x:Math.max(100,Math.min(width-100,saved[key].x)),y:Math.max(100,Math.min(height-100,saved[key].y))}:{...value},
+    ]));
+    const positions=diagramPositions;
     const graphic=svg("svg",{class:"live-network",width,height,viewBox:`0 0 ${width} ${height}`,
         role:"group","aria-label":"Radial water circuit diagram"});
-    diagramLines=[];
+    diagramLines=[];diagramNodes=new Map();
     // Draw one summarized connection per actual supply or return topology;
     // intermediate junctions and pipe segments are collapsed.
     for (const edge of edges) {
@@ -243,7 +293,7 @@ function buildPiping(graph,state) {
         if (!first||!last) continue;
         const geometry=networkEdgeGeometry(first,last,edge.run,
             nodes.get(edge.first).group,nodes.get(edge.last).group);
-        const path=svg("polyline",{points:geometry.points,class:`plan-pipe ${edge.run}`});
+        const path=svg("polyline",{points:geometry.points,class:`plan-pipe ${edge.run}${edge.virtual?" diagram-link":""}`});
         const target=svg("polyline",{points:geometry.points,class:"pipe-target"});
         const arrow=svg("path",{d:"M-5 -5 5 0-5 5",class:`network-arrow ${edge.run}`});
         const label=svg("text",{x:geometry.label.x,y:geometry.label.y,
@@ -251,7 +301,7 @@ function buildPiping(graph,state) {
         const group=livePlanItem("emitters",edge.emitter,"live-pipe-item",
             path,target,arrow,label);
         graphic.append(group);
-        diagramLines.push({edge,group,label,arrows:[
+        diagramLines.push({edge,group,label,path,target,arrows:[
             {node:arrow,x:(geometry.start.x+geometry.end.x)/2,y:(geometry.start.y+geometry.end.y)/2,
                 angle:geometry.angle,orientation:edge.run==="supply"?1:-1},
         ]});
@@ -259,14 +309,19 @@ function buildPiping(graph,state) {
     for (const [key,node] of nodes) {
         const {x,y}=positions.get(key);
         if (node.group === "junction") {
-            const junction=svg("g");
+            const junction=svg("g",{class:"network-junction-node layout-draggable",
+                "data-layout-node":key,tabindex:"0",role:"button","aria-label":`${node.name}; drag to move`});
             for (const [run,offset] of [["supply",-9],["return",9]]) {
                 if (edges.some(edge => edge.run===run&&(edge.first===key||edge.last===key))) {
-                    junction.append(svg("circle",{cx:x,cy:y+offset,r:5,class:`network-junction ${run}`}));
+                    junction.append(svg("circle",{cx:x,cy:y+offset,r:7,class:`network-junction ${run}`}));
                 }
             }
+            if(node.name==="Common pipe"){
+                const title=svg("text",{x:x+13,y:y-14,class:"network-junction-title"});
+                title.textContent="Common pipe";junction.append(title);
+            }
             const title=svg("title"); title.textContent=human(node.name); junction.append(title);
-            graphic.append(junction); continue;
+            graphic.append(junction);diagramNodes.set(key,junction);continue;
         }
         const rect=svg("rect",{x:x-96,y:y-46,width:192,height:92,rx:10,class:"network-node"});
         const label=svg("text",{x:x-70,y:y-22,class:"network-title"});
@@ -279,10 +334,72 @@ function buildPiping(graph,state) {
         }
         const name=human(node.name);
         label.textContent=name.length>22?name.slice(0,21)+"…":name;
-        graphic.append(livePlanItem(node.group,node.name,"network-device",rect,symbol,label,reading));
+        const device=livePlanItem(node.group,node.name,"network-device",rect,symbol,label,reading);
+        device.classList.add("layout-draggable");device.dataset.layoutNode=key;
+        device.setAttribute("tabindex","0");device.setAttribute("aria-label",`${name}; drag to move`);
+        graphic.append(device);diagramNodes.set(key,device);
     }
+    for(const key of diagramNodes.keys())applyDiagramNodePosition(key);
+    bindDiagramDragging(graphic);
     $("live-piping-diagram").replaceChildren(graphic);
     graphic.dataset.root=layout.root;
+}
+
+function applyDiagramNodePosition(key) {
+    const element=diagramNodes.get(key),base=diagramBasePositions.get(key),position=diagramPositions.get(key);
+    if(!element||!base||!position)return;
+    element.setAttribute("transform",`translate(${position.x-base.x} ${position.y-base.y})`);
+}
+
+function repositionDiagramEdge(item) {
+    const {edge,path,target,label,arrows}=item;
+    const first=diagramPositions.get(edge.first),last=diagramPositions.get(edge.last);
+    if(!first||!last)return;
+    const geometry=networkEdgeGeometry(first,last,edge.run,
+        liveNetworkNodes.get(edge.first)?.group,liveNetworkNodes.get(edge.last)?.group);
+    path.setAttribute("points",geometry.points);target.setAttribute("points",geometry.points);
+    label.setAttribute("x",geometry.label.x);label.setAttribute("y",geometry.label.y);
+    arrows.forEach(({node,orientation})=>{
+        node.setAttribute("transform",`translate(${(geometry.start.x+geometry.end.x)/2} ${(geometry.start.y+geometry.end.y)/2}) rotate(${geometry.angle}) scale(${orientation} 1)`);
+    });
+}
+
+function bindDiagramDragging(graphic) {
+    let drag=null;
+    const pointAt=event=>{
+        const point=graphic.createSVGPoint();point.x=event.clientX;point.y=event.clientY;
+        return point.matrixTransform(graphic.getScreenCTM().inverse());
+    };
+    graphic.addEventListener("pointerdown",event=>{
+        const node=event.target.closest("[data-layout-node]");
+        if(!node||event.button!==0)return;
+        const key=node.dataset.layoutNode,position=diagramPositions.get(key);
+        if(!position)return;
+        event.preventDefault();event.stopPropagation();
+        const point=pointAt(event);
+        drag={key,node,pointerId:event.pointerId,start:point,origin:{...position},moved:false};
+        graphic.setPointerCapture(event.pointerId);node.classList.add("dragging");
+    });
+    graphic.addEventListener("pointermove",event=>{
+        if(!drag||event.pointerId!==drag.pointerId)return;
+        const point=pointAt(event),position={
+            x:Math.max(100,Math.min(Number(graphic.getAttribute("width"))-100,drag.origin.x+point.x-drag.start.x)),
+            y:Math.max(100,Math.min(Number(graphic.getAttribute("height"))-100,drag.origin.y+point.y-drag.start.y)),
+        };
+        drag.moved ||= Math.hypot(point.x-drag.start.x,point.y-drag.start.y)>2;
+        diagramPositions.set(drag.key,position);applyDiagramNodePosition(drag.key);
+        for(const item of diagramLines)repositionDiagramEdge(item);
+    });
+    const finish=event=>{
+        if(!drag||event.pointerId!==drag.pointerId)return;
+        const node=drag.node,moved=drag.moved;node.classList.remove("dragging");drag=null;
+        if(moved){
+            const layouts=readDiagramLayouts();
+            layouts[systemCircuit]=Object.fromEntries([...diagramPositions].map(([key,value])=>[key,{...value}]));
+            writeDiagramLayouts(layouts);
+        }
+    };
+    graphic.addEventListener("pointerup",finish);graphic.addEventListener("pointercancel",finish);
 }
 
 function drawPiping(state) {
@@ -290,6 +407,7 @@ function drawPiping(state) {
     const available = circuits.length > 0;
     $("live-circuit-control").hidden = !available;
     $("live-fit-circuit").hidden = !available;
+    $("live-reset-layout").hidden = !available;
     $("live-system-legend").hidden = !available;
     if (!available) {
         $("live-piping-description").textContent = state.elapsed_s === undefined ?
@@ -306,12 +424,18 @@ function drawPiping(state) {
     }
     const graph = circuitGraph(state,systemCircuit);
     $("live-piping-description").textContent = graph.inferred ?
-        "Simplified equipment branches inferred from circuit assignments; supply and return runs are shown separately." :
-        "Simplified equipment-level topology. Supply and return connections are preserved separately; intermediate junctions and pipe segments are collapsed.";
+        "Simplified branches inferred from circuit assignments. Drag nodes to arrange them; the layout is saved in this browser." :
+        "Equipment-level topology with shared pipe taps shown as junctions. Supply and return are separate. Drag nodes to arrange them; the layout is saved in this browser.";
     const key = JSON.stringify([systemCircuit,[...graph.nodes],graph.edges,graph.inferred]);
     if (key !== pipingKey) { pipingKey=key; buildPiping(graph,state); }
     const metrics=pipeMetrics();
     for (const {edge,group,arrows,label} of diagramLines) {
+        if(edge.virtual){
+            label.replaceChildren();label.setAttribute("aria-label","Shared-pipe radiator tap");
+            group.dataset.state="flowing";group.setAttribute("aria-label","Radiator tap at shared pipe");
+            arrows.forEach(({node})=>node.style.display="none");
+            continue;
+        }
         const emitter = state.emitters?.[edge.emitter];
         const pipeValues = ids => ids.map(id => state.pipes?.[id]).filter(Boolean);
         const segments = pipeValues(edge.pipes);
@@ -330,7 +454,7 @@ function drawPiping(state) {
         if (metrics.flow) values.push(Number.isFinite(flow) ? `${format(flow)} L/min` : "Flow —");
         if (metrics.temperature) values.push(Number.isFinite(water) ?
             `${edge.run} ${format(water)} °C` : `${edge.run} temperature —`);
-        if (edge.run==="supply"&&metrics.power&&Number.isFinite(emitter?.total_heat_kw)) values.push(`Heat ${format(emitter.total_heat_kw)} kW`);
+        if (!edge.sharedTrunk&&edge.run==="supply"&&metrics.power&&Number.isFinite(emitter?.total_heat_kw)) values.push(`Heat ${format(emitter.total_heat_kw)} kW`);
         if (metrics.storage && segments.length) {
             const stored=segments.map(item=>item.stored_heat_kwh).filter(Number.isFinite);
             if (stored.length) values.push(`Avg stored ${format(stored.reduce((a,b)=>a+b,0)/stored.length)} kWh/segment`);
@@ -341,8 +465,8 @@ function drawPiping(state) {
             line.textContent=value; label.append(line);
         });
         label.setAttribute("aria-label",values.join("; "));
-        const details=`${human(edge.emitter)} · ${values.join(" · ")}`;
-        group.firstElementChild.textContent=details;
+        const details=`${edge.sharedTrunk?"Shared pipe · ":`${human(edge.emitter)} · `}${values.join(" · ")}`;
+        if(group.firstElementChild?.tagName!="polyline")group.firstElementChild.textContent=details;
         group.setAttribute("aria-label",details);
         arrows.forEach(({node,x,y,angle,orientation})=>{
             node.setAttribute("transform",`translate(${x} ${y}) rotate(${angle}) scale(${orientation} 1)`);
