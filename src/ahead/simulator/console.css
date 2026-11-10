@@ -95,10 +95,6 @@ dialog .toolbar { margin-bottom: 0; }
 .live-heading p,.live-panel-heading p { margin: .23rem 0 0; }
 .live-heading .live-kicker { margin-bottom: .35rem; color: var(--blue); font-size: .7rem; font-weight: 700; letter-spacing: .15em; }
 .live-api { color: var(--blue); font-size: .88rem; white-space: nowrap; }
-.logger-controls { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; padding: .55rem .7rem; margin: 0; }
-.logger-controls label { display: flex; align-items: center; gap: .4rem; font-size: .82rem; }
-.logger-controls select { width: auto; }
-.logger-controls small { flex-basis: 100%; }
 .live-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: .7rem; }
 .live-metric { display: grid; grid-template-columns: 1.85rem minmax(0,1fr); align-items: center; column-gap: .55rem;
     padding: .68rem .8rem; border-radius: 11px; border: 1px solid var(--line); background: var(--panel); }

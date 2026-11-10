@@ -8,12 +8,16 @@ from importlib.resources import files
 import json
 import os
 from pathlib import Path
+import sqlite3
 from threading import Event, Lock, Thread
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
+from zlib import decompress
 
 from ahead.simulator.floorplan import WALL_TYPES
 from ahead.simulator.presets import PRESETS
 from ahead.simulator.project import SETTINGS, compile_project, prepare_project, validate_draft
+from ahead.simulator.telemetry import DEFAULT_INTERVAL_S, TelemetryArchive
 
 
 class Console:
@@ -32,7 +36,9 @@ class Console:
         self.snapshot = {"status": "waiting for simulator"}
         self.history_rows = []
         self.history_last_s = -60
-        self.logger = TelemetryLogger(path.parent / "logs")
+        interval_s = int(os.environ.get("AHEAD_ARCHIVE_INTERVAL_S", DEFAULT_INTERVAL_S))
+        self.archive = TelemetryArchive(path.with_suffix(".telemetry.sqlite3"), interval_s)
+        self.run_id = uuid4().hex
         if path.exists():
             saved = json.loads(path.read_text("utf-8"))
             self.draft = saved["draft"]
@@ -79,18 +85,8 @@ class Console:
         with self.lock:
             self.remote_devices = devices
             self.remote_callback = callback
-
-    def start_logging(self, interval_s):
-        if type(interval_s) is not int or interval_s not in {1, 2, 5, 10, 30, 60}:
-            raise ValueError("Choose a logging interval of 1, 2, 5, 10, 30 or 60 seconds")
-        with self.lock:
-            initial = self.snapshot
-            if isinstance(initial, bytes):
-                initial = json.loads(initial)
-            self.logger.start(interval_s, self.applied, initial)
-
-    def stop_logging(self):
-        return self.logger.stop()
+            if callback is not None:
+                self.run_id = uuid4().hex
 
     def remote_command(self, payload):
         if not isinstance(payload, dict) or set(payload) != {"device", "field", "value"}:
@@ -100,7 +96,7 @@ class Console:
                 raise ValueError("Device controls are unavailable while the simulator starts")
             self.remote_callback(**payload)
 
-    def record(self, scenario, sample, diagnostic):
+    def record(self, scenario, sample, diagnostic, *, archive=False):
         state = scenario.house.diagnostics()
         for name, room in state["rooms"].items():
             zone = scenario.house.zones[name]
@@ -175,86 +171,11 @@ class Console:
         with self.lock:
             if not self.changed.is_set():
                 self.snapshot = encoded
-                self.logger.record(sample.end_s, encoded)
-
-
-class TelemetryLogger:
-    """Write detailed simulator snapshots to a downloadable gzip JSONL trace."""
-
-    def __init__(self, directory: Path):
-        self.directory = directory
-        self.lock = Lock()
-        self.stream = None
-        self.path = None
-        self.interval_s = None
-        self.next_sample_s = None
-        self.samples = 0
-        self.error = None
-
-    def start(self, interval_s, project, initial_state):
-        with self.lock:
-            if self.stream is not None:
-                raise ValueError("A detailed log is already recording")
-            self.directory.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            self.path = self.directory / f"ahead-simulator-{stamp}.jsonl.gz"
-            self.stream = gzip.open(self.path, "wt", encoding="utf-8", newline="\n")
-            self.interval_s = interval_s
-            self.next_sample_s = 0
-            self.samples = 0
-            self.error = None
-            header = {"type": "metadata", "format": "ahead-simulator-jsonl-v1",
-                      "started_utc": datetime.now(timezone.utc).isoformat(),
-                      "sample_interval_s": interval_s, "project": project,
-                      "initial_state": initial_state}
-            self.stream.write(json.dumps(header, allow_nan=False, separators=(",", ":")) + "\n")
-
-    def record(self, elapsed_s, encoded_snapshot):
-        with self.lock:
-            if self.stream is None or elapsed_s + 1e-9 < self.next_sample_s:
+                run_id = self.run_id
+            else:
                 return
-            try:
-                self.stream.write('{"type":"sample","elapsed_s":')
-                self.stream.write(f"{elapsed_s:.3f},\"state\":")
-                self.stream.write(encoded_snapshot.decode("utf-8"))
-                self.stream.write("}\n")
-                self.stream.flush()
-                self.samples += 1
-                self.next_sample_s = elapsed_s + self.interval_s
-            except (OSError, ValueError) as error:
-                self.error = str(error)
-                self.stream.close()
-                self.stream = None
-
-    def stop(self):
-        with self.lock:
-            was_active = self.stream is not None
-            if self.stream is not None:
-                self.stream.close()
-                self.stream = None
-            return was_active
-
-    def status(self):
-        with self.lock:
-            return {"active": self.stream is not None,
-                    "interval_s": self.interval_s, "samples": self.samples,
-                    "file": self.path.name if self.path else None,
-                    "ready": bool(self.path and self.stream is None and self.path.exists()),
-                    "error": self.error}
-
-    def due(self, elapsed_s):
-        with self.lock:
-            if self.stream is not None and self.next_sample_s is not None and elapsed_s < self.next_sample_s - self.interval_s:
-                self.next_sample_s = elapsed_s
-            return self.stream is not None and elapsed_s + 1e-9 >= self.next_sample_s
-
-    def download_path(self):
-        with self.lock:
-            if self.stream is not None:
-                raise ValueError("Stop the recording before downloading it")
-            if not self.path or not self.path.exists():
-                raise ValueError("There is no completed detailed log to download")
-            return self.path
+        if archive:
+            self.archive.record(run_id, sample.end_s, encoded)
 
 
 def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
@@ -319,23 +240,13 @@ def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
                     with console.lock:
                         snapshot = console.snapshot
                     self.send(snapshot)
-                case "/api/logger":
-                    self.send(console.logger.status())
-                case "/api/logger/download":
+                case "/api/archive":
                     try:
-                        path = console.logger.download_path()
-                    except ValueError as error:
-                        self.send({"error": str(error)}, 409)
-                        return
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/gzip")
-                    self.send_header("Content-Length", str(path.stat().st_size))
-                    self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
-                    self.send_header("Cache-Control", "no-store")
-                    self.end_headers()
-                    with path.open("rb") as stream:
-                        while chunk := stream.read(1024 * 1024):
-                            self.wfile.write(chunk)
+                        self.send(console.archive.status())
+                    except (OSError, sqlite3.Error):
+                        self.send({"error": "Could not read the telemetry archive"}, 503)
+                case "/api/archive/export":
+                    self.export_archive()
                 case "/api/project":
                     with console.lock:
                         data = {"draft": console.draft, "applied": console.applied,
@@ -347,12 +258,58 @@ def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
                 case _:
                     self.send({"error": "Unknown endpoint"}, 404)
 
+        def export_archive(self):
+            query = parse_qs(urlsplit(self.path).query)
+            try:
+                start, end = (int(query[key][0]) for key in ("start_ms", "end_ms"))
+                if not 0 <= start <= end <= 253402300799999:
+                    raise ValueError
+            except (KeyError, ValueError):
+                self.send({"error": "Choose a valid start and end time"}, 400)
+                return
+            if not console.archive.path.is_file():
+                self.send({"error": "No telemetry has been archived yet"}, 404)
+                return
+            started = False
+            try:
+                with console.archive.range(start, end) as rows:
+                    row = rows.fetchone()
+                    if row is None:
+                        self.send({"error": "No samples in the selected period"}, 404)
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/gzip")
+                    self.send_header("Content-Disposition",
+                                     'attachment; filename="ahead-telemetry.jsonl.gz"')
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    started = True
+                    with gzip.GzipFile(fileobj=self.wfile, mode="wb", compresslevel=1) as out:
+                        metadata = {"type": "metadata", "format": "ahead-simulator-jsonl-v2",
+                                    "start_ms": start, "end_ms": end,
+                                    "current_sample_interval_s": console.archive.interval_s}
+                        out.write(json.dumps(metadata).encode() + b"\n")
+                        while row is not None:
+                            captured_ms, run_id, elapsed_s, state = row
+                            timestamp = datetime.fromtimestamp(captured_ms / 1000, timezone.utc)
+                            sample = {"type": "sample", "captured_utc": timestamp.isoformat(timespec="milliseconds"),
+                                      "run_id": run_id, "elapsed_s": elapsed_s}
+                            prefix = json.dumps(sample).encode()[:-1] + b', "state": '
+                            out.write(prefix + decompress(state) + b"}\n")
+                            row = rows.fetchone()
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except sqlite3.Error:
+                if not started:
+                    self.send({"error": "Could not read the telemetry archive"}, 503)
+                else:
+                    raise
+
         def do_POST(self):
             if not self.local_request():
                 return
             route = urlsplit(self.path).path
-            if route not in ("/api/project", "/api/apply", "/api/remote",
-                             "/api/logger/start", "/api/logger/stop"):
+            if route not in ("/api/project", "/api/apply", "/api/remote"):
                 self.send({"error": "Unknown endpoint"}, 404)
                 return
             if self.headers.get_content_type() != "application/json":
@@ -369,12 +326,6 @@ def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
                 payload = json.loads(self.rfile.read(length))
                 if route == "/api/remote":
                     console.remote_command(payload)
-                elif route == "/api/logger/start":
-                    if not isinstance(payload, dict) or set(payload) != {"interval_s"}:
-                        raise ValueError("Choose a logging interval")
-                    console.start_logging(payload["interval_s"])
-                elif route == "/api/logger/stop":
-                    console.stop_logging()
                 else:
                     console.update(payload, route == "/api/apply")
             except (ValueError, TypeError, KeyError, OverflowError) as error:
@@ -384,8 +335,7 @@ def serve_console(console: Console, port: int) -> ThreadingHTTPServer:
                 self.send({"error": "Could not persist the configuration"}, 500)
                 return
             self.send({"status": {"/api/project": "saved", "/api/apply": "applying",
-                                  "/api/remote": "accepted", "/api/logger/start": "recording",
-                                  "/api/logger/stop": "stopped"}[route]})
+                                  "/api/remote": "accepted"}[route]})
 
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     Thread(target=server.serve_forever, daemon=True).start()

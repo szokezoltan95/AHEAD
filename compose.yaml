@@ -13,6 +13,7 @@ services:
     depends_on:
       - mqtt
     environment:
+      AHEAD_ARCHIVE_INTERVAL_S: "${AHEAD_ARCHIVE_INTERVAL_S:-15}"
       AHEAD_ALLOWED_HOSTS: "${AHEAD_ALLOWED_HOSTS:-localhost,127.0.0.1,::1}"
     command:
       - /scenario

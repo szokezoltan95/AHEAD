@@ -13,14 +13,6 @@
 <main id="live">
 <div class="live-heading">
     <div><p class="live-kicker">SIMULATION MONITOR</p><h2>Live house</h2><p id="run-info" class="muted"></p></div>
-    <div class="logger-controls panel">
-        <strong>Detailed data log</strong>
-        <label>Capture interval <select id="logger-interval"><option value="1">1 second</option><option value="2">2 seconds</option><option value="5" selected>5 seconds</option><option value="10">10 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option></select></label>
-        <button id="logger-start" class="primary">Start logging</button>
-        <button id="logger-stop" hidden>Stop</button>
-        <a id="logger-download" href="/api/logger/download" hidden>Download .jsonl.gz</a>
-        <small id="logger-status" role="status">Not recording</small>
-    </div>
     <a class="live-api" href="/api/live" target="_blank" rel="noopener">Live JSON ↗</a>
 </div>
 <div class="live-metrics" id="live-metrics" aria-label="House readings"></div>
@@ -95,6 +87,16 @@
 </main>
 <main id="history" hidden>
 <h2>History</h2><p class="muted">Long-term trends from the simulated house.</p>
+<section class="panel" aria-labelledby="archive-title">
+<h2 id="archive-title">Export recorded data</h2>
+<p class="muted">The simulator records detailed snapshots automatically, including every air cell. Times below use your browser's local time.</p>
+<form id="archive-form" class="toolbar">
+<label>From <input id="archive-from" type="datetime-local" step="1" required></label>
+<label>Through <input id="archive-through" type="datetime-local" step="1" required></label>
+<button id="archive-export" class="primary" disabled>Download .jsonl.gz</button>
+</form>
+<p id="archive-status" class="muted" role="status">Checking recorded data…</p>
+</section>
 <div class="toolbar"><label>Signal <select id="history-signal"></select></label>
 <label>Time period <select id="history-period"><option value="3600">Last hour</option><option value="21600">Last 6 hours</option><option value="86400" selected>Last 24 hours</option><option value="604800">Last 7 days</option></select></label></div>
 <canvas id="history-chart" width="1200" height="480" aria-label="Selected signal history"></canvas>
@@ -171,39 +173,53 @@ async function api(path, project) {
     return body;
 }
 
-async function refreshLogger() {
-    try {
-        const status = await api("/api/logger");
-        $("logger-start").hidden = status.active;
-        $("logger-stop").hidden = !status.active;
-        $("logger-download").hidden = !status.ready;
-        $("logger-interval").disabled = status.active;
-        $("logger-status").textContent = status.error ? `Log error: ${status.error}` :
-            status.active ? `Recording every ${status.interval_s}s · ${status.samples} samples` :
-            status.ready ? `${status.samples} samples ready · ${status.file}` : "Not recording";
-    } catch (error) { $("logger-status").textContent = error.message; }
+function localDateInput(ms) {
+    const date = new Date(ms);
+    return new Date(ms - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
 }
-$("logger-start").onclick = async () => {
-    $("logger-start").disabled = true;
-    try { await api("/api/logger/start", {interval_s:Number($("logger-interval").value)}); }
-    catch (error) { $("logger-status").textContent = error.message; }
-    finally { $("logger-start").disabled = false; refreshLogger(); }
+
+async function refreshArchive() {
+    const status = $("archive-status");
+    try {
+        const data = await api("/api/archive");
+        $("archive-export").disabled = data.first_ms === null;
+        if (data.first_ms === null) {
+            status.textContent = data.error || "Waiting for the first recorded snapshot.";
+            return;
+        }
+        if (!$("archive-from").value && !$("archive-through").value) {
+            $("archive-from").value = localDateInput(Math.max(data.first_ms, data.last_ms - 3600000));
+            $("archive-through").value = localDateInput(data.last_ms);
+        }
+        const from = new Date(data.first_ms).toLocaleString();
+        const through = new Date(data.last_ms).toLocaleString();
+        const size = (data.size_bytes / 1048576).toLocaleString(undefined, {maximumFractionDigits: 1});
+        status.textContent = `Available: ${from} – ${through} · ${data.interval_s}s sampling · ${size} MiB` +
+            (data.error ? ` · Recording error: ${data.error}` : "");
+    } catch (error) { status.textContent = error.message; }
+}
+
+$("archive-form").onsubmit = event => {
+    event.preventDefault();
+    const start = new Date($("archive-from").value).getTime();
+    const end = new Date($("archive-through").value).getTime();
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
+        $("archive-status").textContent = "Choose a start time at or before the end time.";
+        return;
+    }
+    const query = new URLSearchParams({start_ms: start, end_ms: end + 999});
+    window.location.assign("/api/archive/export?" + query);
 };
-$("logger-stop").onclick = async () => {
-    $("logger-stop").disabled = true;
-    try { await api("/api/logger/stop", {}); }
-    catch (error) { $("logger-status").textContent = error.message; }
-    finally { $("logger-stop").disabled = false; refreshLogger(); }
-};
-setInterval(refreshLogger, 2500);
-refreshLogger();
 
 function showPage(page) {
     for (const name of ["live","configure","history"]) $(name).hidden = page !== name;
     $("show-live").setAttribute("aria-pressed", page === "live");
     $("show-config").setAttribute("aria-pressed", page === "configure");
     if (page === "configure" && project) drawPlan();
-    if (page === "history") drawHistory();
+    if (page === "history") {
+        drawHistory();
+        refreshArchive();
+    }
 }
 $("show-live").onclick = () => showPage("live");
 $("show-config").onclick = () => showPage("configure");
@@ -234,7 +250,12 @@ async function drawHistory() {
         ctx.stroke();$("history-status").textContent=`${points.length} samples · ${keys[key]}`;
     } catch(e) { $("history-status").textContent=e.message; }
 }
-setInterval(()=>{if(!$("history").hidden)drawHistory()},10000);
+setInterval(() => {
+    if (!$("history").hidden) {
+        drawHistory();
+        refreshArchive();
+    }
+}, 10000);
 
 function input(label, value, changed, options, whole = false, refreshed = null) {
     const wrapper = el("label", label);
