@@ -200,8 +200,19 @@ function paint(canvas,plan,rooms,floor,box,liveSources=null) {
             for (const opening of location.walls?.[side]?.openings || []) {
                 const axis = first.y === last.y ? "x" : "y";
                 const middle = first[axis]+opening.distance;
-                canvas.append(line({...first,[axis]:middle-opening.width/2},
-                    {...first,[axis]:middle+opening.width/2},{class:"plan-opening"}));
+                const beginning = {...first,[axis]:middle-opening.width/2};
+                const ending = {...first,[axis]:middle+opening.width/2};
+                const type = opening.type || "window";
+                canvas.append(line(beginning,ending,{class:"plan-opening plan-opening-"+type}));
+                if (type === "door") {
+                    const openness = (100-Math.max(0,Math.min(100,opening.openness_pct ?? 0)))*Math.PI/200;
+                    let dx = Math.cos(openness)*opening.width, dy = Math.sin(openness)*opening.width;
+                    if (side === "south") dy *= -1;
+                    if (side === "east") [dx,dy] = [-dy,dx];
+                    if (side === "west") [dx,dy] = [dy,dx];
+                    canvas.append(line(beginning,{x:beginning.x+dx,y:beginning.y+dy},
+                        {class:"plan-door-leaf"}));
+                }
             }
         }
     }
@@ -415,20 +426,42 @@ function wallDialog(name,side) {
         if (!placement.derive) fields.push(el("small","Enable generated walls in the room settings to use these values in the simulation."));
         for (const [index,opening] of wall.openings.entries()) {
             const entry = el("fieldset"); entry.append(el("legend",`Opening ${index+1}`),
-                input("Type",opening.preset,next => opening.preset=next,Object.keys(catalogue.presets.windows)),
+                input("Opening type",opening.type || "window",next => {
+                    opening.type=next;
+                    if (next === "window") opening.preset ??= "double_glazed";
+                    show();
+                },["window","door","portal"],false,show),
                 input("Centre from first end (m)",opening.distance,next => opening.distance=next),
                 input("Width (m)",opening.width,next => opening.width=next),
-                input("Height (m)",opening.height,next => opening.height=next),
-                extraButton("Remove opening",() => { wall.openings.splice(index,1); show(); }));
+                input("Height (m)",opening.height,next => opening.height=next));
+            if ((opening.type || "window") === "window") {
+                entry.append(input("Window type",opening.preset || "double_glazed",
+                    next => opening.preset=next,Object.keys(catalogue.presets.windows)));
+            }
+            if (opening.type === "door") {
+                entry.append(input("Door open (%)",opening.openness_pct ?? 0,
+                    next => opening.openness_pct=next));
+            }
+            entry.append(extraButton("Remove opening",() => { wall.openings.splice(index,1); show(); }));
             fields.push(entry);
         }
         dialog(`${human(name)} · ${side} wall`,fields,() => {
             if (wall.openings.some(o => !(o.width > 0 && o.height > 0 && o.distance >= o.width/2 &&
                 o.distance+o.width/2 <= extent))) return "Every opening must fit inside this wall.";
             placement.walls ??= {}; placement.walls[side] = wall;
-        },[extraButton("Add window / door",() => {
-            wall.openings.push({preset:"double_glazed",distance:extent/2,width:Math.min(1.2,extent),height:1.1}); show();
-        })]);
+        },[
+            extraButton("Add window",() => {
+                wall.openings.push({type:"window",preset:"double_glazed",distance:extent/2,
+                    width:Math.min(1.2,extent),height:1.1}); show();
+            }),
+            extraButton("Add door",() => {
+                wall.openings.push({type:"door",distance:extent/2,width:Math.min(.9,extent),
+                    height:2.0,openness_pct:0}); show();
+            }),
+            extraButton("Add portal",() => {
+                wall.openings.push({type:"portal",distance:extent/2,width:Math.min(.9,extent),
+                    height:2.0}); show();
+            })]);
     }
     show();
 }

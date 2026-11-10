@@ -121,8 +121,75 @@ def _vertical_extent(room, levels):
     return floor, floor + (room["height_m"] or level["height_m"])
 
 
+def compile_air_openings(plan, rows, rectangles=None):
+    """Resolve interior doors and portals into room-relative wall openings."""
+    layouts, measured = _floorplan_rooms(plan, rows)
+    rectangles = rectangles or measured
+    openings, seen = [], {}
+    for room_name, layout in layouts.items():
+        room = rows["rooms"][room_name]
+        for side, wall in layout.get("walls", {}).items():
+            for opening in wall.get("openings", []):
+                if not isinstance(opening, dict):
+                    raise ValueError(f"Invalid opening in {room_name}")
+                kind = opening.get("type", "window")
+                if kind not in {"window", "door", "portal"}:
+                    raise ValueError(f"Unknown opening type in {room_name}'s {side} wall")
+                if kind == "window":
+                    continue
+                width = _number(opening.get("width"), "Opening width", .1, 25)
+                height = _number(opening.get("height"), "Opening height", .1, 25)
+                distance = _number(opening.get("distance"), "Opening position", 0, 100)
+                openness = (_number(opening.get("openness_pct", 0), "Door openness", 0, 100) / 100
+                            if kind == "door" else 1.0)
+                anchor, wall_start, wall_end = _side(rectangles[room_name], side)
+                if distance < width / 2 or distance + width / 2 > wall_end - wall_start + TOLERANCE:
+                    raise ValueError(f"Opening does not fit on {room_name}'s {side} wall")
+                center = wall_start + distance
+                left, right = center - width / 2, center + width / 2
+                adjacent = []
+                for other_name, rectangle in rectangles.items():
+                    other = rows["rooms"][other_name]
+                    if other_name == room_name or other["level"] != room["level"]:
+                        continue
+                    other_anchor, other_start, other_end = _side(rectangle, OPPOSITE[side])
+                    if (_same(anchor, other_anchor) and left >= other_start - TOLERANCE
+                            and right <= other_end + TOLERANCE):
+                        adjacent.append((other_name, other_start))
+                if len(adjacent) != 1:
+                    raise ValueError(f"A {kind} must fit on a wall shared by exactly two rooms")
+                other_name, other_start = adjacent[0]
+                if not layouts[room_name].get("derive") or not layouts[other_name].get("derive"):
+                    raise ValueError("Both rooms need generated floorplan walls for an interior door or portal")
+                first_floor, first_ceiling = _vertical_extent(room, rows["levels"])
+                other_floor, other_ceiling = _vertical_extent(rows["rooms"][other_name], rows["levels"])
+                if not _same(first_floor, other_floor):
+                    raise ValueError("Interior doors and portals require rooms at the same floor elevation")
+                if height > min(first_ceiling, other_ceiling) - first_floor + TOLERANCE:
+                    raise ValueError("Door or portal height exceeds the shared wall height")
+                axis = "x" if side in ("north", "south") else "y"
+                pair = tuple(sorted((room_name, other_name)))
+                key = (pair, axis, round(anchor, 6), round(left, 6), round(right, 6), round(height, 6))
+                signature = (kind, openness)
+                if key in seen:
+                    if seen[key] != signature:
+                        raise ValueError("The two sides of a shared doorway have conflicting settings")
+                    continue
+                seen[key] = signature
+                openings.append({
+                    "first_room": room_name, "second_room": other_name,
+                    "first_side": side, "second_side": OPPOSITE[side],
+                    "first_offset_m": distance, "second_offset_m": center - other_start,
+                    "axis": axis, "plane_m": anchor, "left_m": left, "right_m": right,
+                    "width_m": width, "height_m": height, "kind": kind,
+                    "openness": openness,
+                })
+    return openings
+
+
 def derive_envelope(plan, rows):
     layouts, rectangles = _floorplan_rooms(plan, rows)
+    air_openings = compile_air_openings(plan, rows, rectangles)
     derived = {name for name, layout in layouts.items() if layout.get("derive")}
     old_walls = {
         name for name, row in rows["surfaces"].items()
@@ -180,9 +247,21 @@ def derive_envelope(plan, rows):
                     if overlap > TOLERANCE and not (other in derived and other < name):
                         unheated = (rows["rooms"][name]["preset"] == "unheated" or
                                     rows["rooms"][other]["preset"] == "unheated")
-                        _surface(rows, surface, "wall", "masonry_unheated" if unheated else "partition",
-                                 room=name, adjacent_room=other,
-                                 boundary="room", area_m2=width * overlap, azimuth_deg=azimuth)
+                        tangent_axis = "x" if side in ("north", "south") else "y"
+                        removed_area = sum(
+                            opening["width_m"] * opening["height_m"]
+                            for opening in air_openings
+                            if {opening["first_room"], opening["second_room"]} == {name, other}
+                            and opening["axis"] == tangent_axis
+                            and _same(opening["plane_m"], anchor)
+                            and opening["left_m"] >= first - TOLERANCE
+                            and opening["right_m"] <= last + TOLERANCE
+                        )
+                        wall_area = max(0.0, width * overlap - removed_area)
+                        if wall_area > TOLERANCE:
+                            _surface(rows, surface, "wall", "masonry_unheated" if unheated else "partition",
+                                     room=name, adjacent_room=other,
+                                     boundary="room", area_m2=wall_area, azimuth_deg=azimuth)
                 outside = room_height - overlap
                 buried = min(burial, outside)
                 if buried > TOLERANCE:
@@ -195,18 +274,19 @@ def derive_envelope(plan, rows):
             for index, opening in enumerate(windows):
                 if not isinstance(opening, dict):
                     raise ValueError(f"Invalid opening in {name}")
-                preset = opening.get("preset", "double_glazed")
-                if preset not in PRESETS["windows"]:
-                    raise ValueError(f"Unknown opening type in {name}")
                 width = _number(opening.get("width", 1.2), "Opening width", 0.1, 25)
-                height = _number(opening.get("height", 1.1), "Opening height", 0.1, room_height)
-                distance = _number(opening.get("distance", (end - start) / 2),
-                                   "Opening position", 0, end - start)
+                distance = _number(opening.get("distance", (end - start) / 2), "Opening position", 0, end - start)
                 left = start + distance - width / 2
                 right = left + width
                 if any(left < b - TOLERANCE and right > a + TOLERANCE for a, b in occupied):
                     raise ValueError(f"Openings overlap on {name}'s {side} wall")
                 occupied.append((left, right))
+                if opening.get("type", "window") in {"door", "portal"}:
+                    continue
+                preset = opening.get("preset", "double_glazed")
+                if preset not in PRESETS["windows"]:
+                    raise ValueError(f"Unknown opening type in {name}")
+                height = _number(opening.get("height", 1.1), "Opening height", 0.1, room_height)
                 for span, (first, last, other) in enumerate(spans):
                     surface = f"plan_{name}_{side}_{span + 1}"
                     if (not other and surface in rows["surfaces"]

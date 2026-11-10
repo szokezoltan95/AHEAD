@@ -8,7 +8,7 @@ from math import isfinite
 from re import fullmatch
 
 from ahead.control import HysteresisController
-from ahead.simulator.floorplan import compile_pipes, derive_envelope, pipe_paths, validate_plan
+from ahead.simulator.floorplan import compile_air_openings, compile_pipes, derive_envelope, pipe_paths, validate_plan
 from ahead.simulator.pipe_network import PipeNetwork
 from ahead.simulator.house import Conditions, House, OutdoorUnit, Partition, Source, Zone
 from ahead.simulator.hydronics import Emitter, HeatExchanger, WaterLoop
@@ -106,6 +106,7 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
 
     plan = project.get("floorplan", {})
     rectangles = derive_envelope(plan, rows)
+    air_openings = compile_air_openings(plan, rows, rectangles)
     room_rows = rows["rooms"]
     surfaces = rows["surfaces"]
     layers = defaultdict(list)
@@ -357,7 +358,8 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
         )
     house = House(tuple(zones), tuple(partitions), tuple(sources), loops=loops, emitters=emitters,
                   outdoor_units=outdoor_units, exchangers=exchangers, pipe_network=pipe_network,
-                  air_source_positions=air_source_positions, room_dimensions_m=air_dimensions)
+                  air_source_positions=air_source_positions, room_dimensions_m=air_dimensions,
+                  air_openings=tuple(air_openings))
 
     for row in rows["solar"].values():
         face = _reference(row, "surface", surfaces)

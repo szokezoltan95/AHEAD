@@ -67,6 +67,9 @@ header small { color: #cfe6f5; }
 .plan-wall { stroke: transparent; stroke-width: 12; cursor: pointer; }
 .plan-wall:hover { stroke: var(--blue); stroke-opacity: .4; }
 .plan-opening { stroke: var(--blue); stroke-width: 4; pointer-events: none; }
+.plan-opening-door { stroke: var(--supply); }
+.plan-opening-portal { stroke: var(--return); stroke-dasharray: 3 2; }
+.plan-door-leaf { stroke: var(--supply); stroke-width: 2; pointer-events: none; }
 .plan-label { pointer-events: none; font-weight: 650; }
 .plan-meta { pointer-events: none; fill: var(--muted); }
 .plan-pipe { stroke-width: 3.8; stroke-linecap: round; fill: none; }

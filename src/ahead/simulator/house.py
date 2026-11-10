@@ -22,6 +22,9 @@ AIR_CELL_FAN_MIX_KW_K = 0.008
 AIR_CELL_JET_KW_K = 0.04
 AIR_EMITTER_SOURCE_SIGMA_M = 0.35
 AIR_AC_SOURCE_SIGMA_M = 0.45
+AIR_DOOR_INTERACTION_DISTANCE_M = 0.5
+AIR_DOOR_CLOSED_KW_K_M2 = 0.002
+AIR_DOOR_OPEN_KW_K_M2 = 0.2
 
 
 @dataclass(frozen=True)
@@ -183,6 +186,7 @@ class House:
         pipe_network=None,
         air_source_positions: Mapping[str, tuple[float, float, float]] | None = None,
         room_dimensions_m: Mapping[str, tuple[float, float, float]] | None = None,
+        air_openings: tuple[dict, ...] = (),
     ):
         self.zones = {zone.name: zone for zone in zones}
         self.sources = {source.name: source for source in sources}
@@ -215,6 +219,33 @@ class House:
         self._moisture = {
             zone.name: humidity_ratio(zone.initial_c, zone.initial_humidity_pct) for zone in zones
         }
+        self._air_opening_edges = []
+        self._air_opening_conductance = []
+        edge_cell_load = {}
+        for opening in air_openings:
+            first, second = opening["first_room"], opening["second_room"]
+            cells = [self._opening_cells(opening, "first"), self._opening_cells(opening, "second")]
+            if not cells[0] or not cells[1]:
+                continue
+            area = opening["width_m"] * opening["height_m"]
+            fraction = opening["openness"] if opening["kind"] == "door" else 1.0
+            total_k = area * (AIR_DOOR_CLOSED_KW_K_M2 +
+                              (AIR_DOOR_OPEN_KW_K_M2 - AIR_DOOR_CLOSED_KW_K_M2) * fraction)
+            pairs = []
+            remaining = set(range(len(cells[1])))
+            for cell_a in cells[0]:
+                if not remaining:
+                    break
+                index = min(remaining, key=lambda i: (cells[1][i][3] - cell_a[3]) ** 2 +
+                            (cells[1][i][4] - cell_a[4]) ** 2)
+                remaining.remove(index)
+                pairs.append((cell_a[0], cells[1][index][0]))
+            conductance = total_k / len(pairs)
+            self._air_opening_conductance.append((first, second, total_k))
+            for cell_a, cell_b in pairs:
+                self._air_opening_edges.append((first, cell_a, second, cell_b, conductance))
+                edge_cell_load[(first, cell_a)] = edge_cell_load.get((first, cell_a), 0) + conductance
+                edge_cell_load[(second, cell_b)] = edge_cell_load.get((second, cell_b), 0) + conductance
         loops = dict(loops or ({"main": loop} if loop else {}))
         emitters = dict(emitters) if emitters is not None else {
             zone.name: Emitter(zone.name, "main", zone.radiator_kw_k, zone.radiator_flow_l_min)
@@ -393,6 +424,8 @@ class House:
             cell_capacity = zone.air_capacity / self._cell_count(zone.name)
             grid_rate = (2 * sum(mix) + buoyancy[2]) / cell_capacity
             max_rate = max(max_rate, grid_rate)
+        max_rate = max(max_rate, max((conductance / (self.zones[room].air_capacity /
+            self._cell_count(room)) for (room, _cell), conductance in edge_cell_load.items()), default=0))
         if pipe_network:
             max_rate += sum(
                 pipe.kw_k / (self.zones[pipe.room].fabric_capacity
@@ -412,6 +445,39 @@ class House:
     def _cell_count(self, room: str) -> int:
         nx, ny, nz = self._air_grid_shape[room]
         return nx * ny * nz
+
+    def _opening_cells(self, opening: dict, prefix: str):
+        room = opening[f"{prefix}_room"]
+        side = opening[f"{prefix}_side"]
+        offset = opening[f"{prefix}_offset_m"]
+        nx, ny, nz = self._air_grid_shape[room]
+        dx, dy, dz = self._air_cell_size_m[room]
+        # Grid axes follow the room's plan length (x), width (y), then height (z).
+        lengths = (nx * dx, ny * dy, nz * dz)
+        along_x = side in ("north", "south")
+        normal_length = lengths[1] if along_x else lengths[0]
+        normal_size = dy if along_x else dx
+        tangent_size = dx if along_x else dy
+        tangent_count = nx if along_x else ny
+        plane_side = {"north": "low", "west": "low", "south": "high", "east": "high"}[side]
+        cells = []
+        for iz in range(nz):
+            z = (iz + .5) * dz
+            if z > opening["height_m"] + dz / 2:
+                continue
+            for tangent_index in range(tangent_count):
+                tangent = (tangent_index + .5) * tangent_size
+                if abs(tangent - offset) > opening["width_m"] / 2 + tangent_size / 2:
+                    continue
+                for normal_index in range((ny if along_x else nx)):
+                    normal = (normal_index + .5) * normal_size
+                    distance = normal if plane_side == "low" else normal_length - normal
+                    if distance > AIR_DOOR_INTERACTION_DISTANCE_M + normal_size / 2:
+                        continue
+                    cell = ((iz, normal_index, tangent_index) if along_x
+                            else (iz, tangent_index, normal_index))
+                    cells.append((cell, distance, tangent, z, tangent - offset))
+        return sorted(cells, key=lambda item: (item[4], item[3]))
 
     def _grid_conductances(self, room: str):
         dx, dy, dz = self._air_cell_size_m[room]
@@ -1008,6 +1074,18 @@ class House:
             )
             self._source_details[name]["boiler_casing_loss_kw"] = casing_loss
 
+        opening_cell_flow = {}
+        for first, cell_a, second, cell_b, conductance in self._air_opening_edges:
+            grid_a, grid_b = self._air_cells[first], self._air_cells[second]
+            delta = grid_a[cell_a[0]][cell_a[1]][cell_a[2]] - grid_b[cell_b[0]][cell_b[1]][cell_b[2]]
+            flow = conductance * delta
+            opening_cell_flow[(first, cell_a)] = opening_cell_flow.get((first, cell_a), 0) - flow
+            opening_cell_flow[(second, cell_b)] = opening_cell_flow.get((second, cell_b), 0) + flow
+        for first, second, conductance in self._air_opening_conductance:
+            vapour = (self._moisture[first] - self._moisture[second]) * conductance / AIR_KWH_KG_K
+            moisture_flow[first] -= vapour
+            moisture_flow[second] += vapour
+
         for name, zone in self.zones.items():
             before = self._air[name] - zone.setpoint_c
             previous_air = self._air[name]
@@ -1018,6 +1096,9 @@ class House:
             mix, buoyancy, fan = self._grid_conductances(name)
             fan = tuple(value * fan_mixing[name] for value in fan)
             transfer = [[[0.0 for _ in range(nx)] for _ in range(ny)] for _ in range(nz)]
+            for (room_name, (iz, iy, ix)), flow in opening_cell_flow.items():
+                if room_name == name:
+                    transfer[iz][iy][ix] += flow
             for iz in range(nz):
                 for iy in range(ny):
                     for ix in range(nx):
