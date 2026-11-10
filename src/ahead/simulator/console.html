@@ -57,6 +57,7 @@
                 <button id="live-flow-toggle" data-icon="activity" aria-pressed="false">Flow labels</button>
                 <button id="live-heatmap-toggle" data-icon="activity" aria-pressed="true">Air temperature grid</button>
                 <button id="live-currents-toggle" data-icon="activity" aria-pressed="false">Air currents</button>
+                <button id="live-air-3d-open" data-icon="activity">3D air view</button>
                 <button id="live-fit-plan" data-icon="fit">Fit</button>
                 <button id="live-zoom-in" aria-label="Zoom in">+</button>
                 <button id="live-zoom-out" aria-label="Zoom out">−</button>
@@ -149,6 +150,16 @@
 <p class="plan-help"><span class="pipe-supply">● Supply</span> &nbsp; <span class="pipe-return">● Return</span> &nbsp; Grid 0.25 m · Select a pipe for mounting, offsets and height.</p>
 </section>
 <dialog id="plan-dialog"><h2 id="plan-dialog-title"></h2><form id="plan-form"></form></dialog>
+<dialog id="live-air-3d-dialog" class="air-3d-dialog">
+    <div class="air-3d-heading"><div><h2>Room air currents · 3D</h2>
+        <p class="muted">Isometric view of the modeled cell currents through the room height.</p></div>
+        <button id="live-air-3d-close" type="button">Close</button></div>
+    <label>Room <select id="live-air-3d-room"></select></label>
+    <svg id="live-air-3d-svg" class="air-3d-canvas" role="img" aria-label="Isometric room air currents"></svg>
+    <div class="live-legend"><span>Cell color = air temperature</span>
+        <span class="air-3d-legend-horizontal">→ Horizontal flow</span>
+        <span class="air-3d-legend-up">↑ Updraft</span><span class="air-3d-legend-down">↓ Downdraft</span></div>
+</dialog>
 </main>
 <script>
 "use strict";
