@@ -70,6 +70,7 @@ header small { color: #cfe6f5; }
 .plan-opening-door { stroke: var(--supply); }
 .plan-opening-portal { stroke: var(--return); stroke-dasharray: 3 2; }
 .plan-door-leaf { stroke: var(--supply); stroke-width: 2; pointer-events: none; }
+.plan-facing { stroke: var(--blue); stroke-width: 2.5; pointer-events: none; }
 .plan-label { pointer-events: none; font-weight: 650; }
 .plan-meta { pointer-events: none; fill: var(--muted); }
 .plan-pipe { stroke-width: 3.8; stroke-linecap: round; fill: none; }

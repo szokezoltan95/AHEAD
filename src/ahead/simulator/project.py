@@ -342,6 +342,7 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
     source_zones = {name: emitter.zone for name, emitter in emitters.items()}
     source_zones.update({source.name: source.direct_zone for source in sources if source.direct_zone})
     air_source_positions = {}
+    air_source_facing_deg = {}
     emitter_names = set(emitters)
     source_names = {source.name: source for source in sources}
     for node in plan.get("nodes", {}).values():
@@ -356,9 +357,13 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
             .18 if device in emitter_names
             else .85 if source_names[device].outdoor_unit else .18,
         )
+        if (node.get("kind") == "sources" and node.get("facing_deg") is not None
+                and source_names[device].outdoor_unit and source_names[device].direct_zone):
+            air_source_facing_deg[device] = node["facing_deg"] % 360
     house = House(tuple(zones), tuple(partitions), tuple(sources), loops=loops, emitters=emitters,
                   outdoor_units=outdoor_units, exchangers=exchangers, pipe_network=pipe_network,
-                  air_source_positions=air_source_positions, room_dimensions_m=air_dimensions,
+                  air_source_positions=air_source_positions,
+                  air_source_facing_deg=air_source_facing_deg, room_dimensions_m=air_dimensions,
                   air_openings=tuple(air_openings))
 
     for row in rows["solar"].values():

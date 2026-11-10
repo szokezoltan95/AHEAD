@@ -252,10 +252,26 @@ function paint(canvas,plan,rooms,floor,box,liveSources=null) {
                 {emitters:"radiator",sources:"boiler",circuits:"tank"}[node.kind]);
             for (const [key,value] of Object.entries({x:x-7,y:y-7,width:14,height:14,class:"icon plan-device-icon"})) symbol.setAttribute(key,value);
             const label = textAt(node.x+.24,node.y-.21,human(node.equipment),"plan-meta");
-            if (drawing) canvas.append(equipment,symbol,label);
+            const source = node.kind === "sources"
+                ? (drawing ? find("sources",node.equipment) : liveSources[node.equipment]) : null;
+            const facing = source?.preset === "indoor_split"
+                ? (node.facing_deg ?? roomCenterFacing(node,source.room || "")) : null;
+            const facingMarks = [];
+            if (facing !== null && Number.isFinite(facing)) {
+                const angle = facing*Math.PI/180, dx = Math.sin(angle), dy = -Math.cos(angle);
+                const start = {x:node.x+dx*.19,y:node.y+dy*.19};
+                const end = {x:node.x+dx*.48,y:node.y+dy*.48};
+                const back = {x:end.x-dx*.10,y:end.y-dy*.10};
+                const sideX = Math.cos(angle)*.055, sideY = Math.sin(angle)*.055;
+                facingMarks.push(line(start,end,{class:"plan-facing"}),
+                    line(end,{x:back.x+sideX,y:back.y+sideY},{class:"plan-facing"}),
+                    line(end,{x:back.x-sideX,y:back.y-sideY},{class:"plan-facing"}));
+            }
+            if (drawing) canvas.append(equipment,symbol,...facingMarks,label);
             else {
                 const reading = textAt(node.x+.24,node.y+.12,"","live-device-reading");
-                canvas.append(livePlanItem(node.kind,node.equipment,"live-device-item",equipment,symbol,label,reading));
+                canvas.append(livePlanItem(node.kind,node.equipment,"live-device-item",equipment,symbol,
+                    ...facingMarks,label,reading));
             }
         }
     }
@@ -474,6 +490,13 @@ function containingRoom(point) {
             point.x <= location.x+room.length_m && point.y <= location.y+room.width_m;
     })?.[0] || "";
 }
+function roomCenterFacing(point, roomName) {
+    const room = roomMap(project)[roomName], placement = planData().rooms[roomName];
+    if (!room || !placement) return 0;
+    const dx = placement.x + room.length_m/2 - point.x;
+    const dy = placement.y + room.width_m/2 - point.y;
+    return (Math.atan2(dx,-dy)*180/Math.PI+360)%360;
+}
 function addPoint(point,props={}) {
     const nodes = planData().nodes;
     const id = unique("point",Object.keys(nodes));
@@ -506,12 +529,25 @@ function equipmentDialog(point,nodeId) {
             input("Heat source ID",sourceId,next => sourceId=next),
             input("Preset",sourcePreset,next => sourcePreset=next,["gas_on_off","gas_modulating","air_to_water"]),
             input("Water circuit",circuit,next => circuit=next,list("circuits").map(row => row.id)));
+        const placedSource = draft.kind === "sources" ? find("sources",draft.equipment) : null;
+        if (placedSource?.preset === "indoor_split") fields.push(input("A/C facing (° clockwise from north)",
+            draft.facing_deg ?? roomCenterFacing(draft,placedSource.room || room),
+            next => draft.facing_deg=next));
         if (draft.kind === "circuits" && !list("circuits").length) {
             fields.push(el("small","Add a water circuit in Advanced configuration first."));
         }
         dialog(current ? "Equipment connection" : "Place equipment",fields,() => {
             if (!draft.equipment || !Number.isFinite(draft.height_mm) || draft.height_mm < -2000 || draft.height_mm > 10000) {
                 return "Choose the equipment and a valid connection height.";
+            }
+            const selectedSource = draft.kind === "sources" ? find("sources",draft.equipment) : null;
+            if (selectedSource?.preset === "indoor_split") {
+                draft.facing_deg ??= roomCenterFacing(draft,selectedSource.room || room);
+                if (!Number.isFinite(draft.facing_deg) || draft.facing_deg < 0 || draft.facing_deg > 360) {
+                    return "Set an A/C facing direction from 0° to 360° clockwise from north.";
+                }
+            } else {
+                delete draft.facing_deg;
             }
             if (draft.equipment === "+ New radiator") {
                 if (!/^[a-zA-Z0-9_-]{1,64}$/.test(radiatorId) || find("emitters",radiatorId) || !room || !circuit) {

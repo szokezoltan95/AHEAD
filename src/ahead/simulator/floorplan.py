@@ -384,6 +384,10 @@ def compile_pipes(plan, rows, rectangles):
             raise ValueError(f"Unknown pipe endpoint type at {name}")
         if kind != "junction" and node.get("equipment") not in rows[kind]:
             raise ValueError(f"Pipe point {name} references missing equipment")
+        if "facing_deg" in node:
+            if kind != "sources" or rows["sources"][node["equipment"]]["preset"] != "indoor_split":
+                raise ValueError(f"Facing direction at {name} is only valid for an indoor split unit")
+            _number(node["facing_deg"], "A/C facing direction", 0, 360)
 
     def location(node, room, side, offset):
         x, y = node["x"], node["y"]

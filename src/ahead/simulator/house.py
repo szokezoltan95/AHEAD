@@ -5,7 +5,7 @@ between simulated nodes enters one node and leaves the other in the same step.
 """
 
 from dataclasses import dataclass, field
-from math import atan2, ceil, cos, exp, expm1, isfinite, radians, sin, sqrt
+from math import atan2, ceil, cos, exp, expm1, isfinite, pi, radians, sin, sqrt
 from typing import Mapping
 
 from ahead.control import ControlPlan, Equipment, SourceCapabilities
@@ -20,6 +20,7 @@ AIR_CELL_MIX_KW_K = 0.0009
 AIR_CELL_BUOYANCY_KW_K = 0.003
 AIR_CELL_FAN_MIX_KW_K = 0.008
 AIR_CELL_JET_KW_K = 0.04
+AIR_RADIATOR_PLUME_DELTA_C = 8.0
 AIR_EMITTER_SOURCE_SIGMA_M = 0.35
 AIR_AC_SOURCE_SIGMA_M = 0.45
 AIR_DOOR_INTERACTION_DISTANCE_M = 0.5
@@ -185,6 +186,7 @@ class House:
         exchangers: Mapping[str, HeatExchanger] | None = None,
         pipe_network=None,
         air_source_positions: Mapping[str, tuple[float, float, float]] | None = None,
+        air_source_facing_deg: Mapping[str, float] | None = None,
         room_dimensions_m: Mapping[str, tuple[float, float, float]] | None = None,
         air_openings: tuple[dict, ...] = (),
     ):
@@ -254,6 +256,7 @@ class House:
         positions = dict(air_source_positions or {})
         self._air_source_weights = {}
         self._air_source_positions = {}
+        self._air_source_facing_deg = dict(air_source_facing_deg or {})
         for name, emitter in emitters.items():
             position = positions.get(name, (.5, .82, .18))
             if len(position) == 2:
@@ -271,6 +274,12 @@ class House:
                 self._air_source_weights[name] = self._point_weights(
                     source.direct_zone, *position,
                     sigma=AIR_AC_SOURCE_SIGMA_M if source.outdoor_unit else AIR_EMITTER_SOURCE_SIGMA_M)
+        # Precompute the room-wide radiator circulation from saved room geometry
+        # and emitter positions. Runtime steps scale it by convective output.
+        self._air_circulation_patterns = {
+            name: self._build_radiator_circulation_pattern(emitter.zone, name, emitter.width_m)
+            for name, emitter in emitters.items()
+        }
         self.outdoor_units = dict(outdoor_units or {})
         self.exchangers = dict(exchangers or {})
         self._exchanger_details = {}
@@ -441,6 +450,17 @@ class House:
                             source.boiler_metal_mass_kg * source.boiler_metal_cp_j_kgk / 3_600_000)
                 boiler_rates.append((source.boiler_water_ua_kw_k + source.boiler_loss_kw_k) / capacity)
         self._max_rate = max((max_rate, *self.hydronics.rates(), *boiler_rates)) + max(exchanger_rates.values(), default=0)
+        for emitter in emitters.values():
+            if emitter.rated_output_kw <= 0:
+                continue
+            room = emitter.zone
+            nx, ny, _nz = self._air_grid_shape[room]
+            slices = max(nx, ny)
+            cell_capacity = self.zones[room].air_capacity / self._cell_count(room)
+            self._max_rate = max(
+                self._max_rate,
+                emitter.rated_output_kw / AIR_RADIATOR_PLUME_DELTA_C / slices / cell_capacity,
+            )
 
     def _cell_count(self, room: str) -> int:
         nx, ny, nz = self._air_grid_shape[room]
@@ -490,6 +510,69 @@ class House:
             tuple(AIR_CELL_FAN_MIX_KW_K * value for value in scale),
         )
 
+    def _build_radiator_circulation_pattern(self, room: str, emitter_name: str, width_m: float):
+        """Precompute conservative room-wide circulation faces for one radiator.
+
+        The streamfunction forms a broad roll: warm air rises beside the
+        radiator, returns across the ceiling, descends through the room, and
+        moves back toward the radiator near the floor.
+        """
+        nx, ny, nz = self._air_grid_shape[room]
+        if nz < 2 or min(nx, ny) < 2:
+            return []
+
+        sx, sy, _sz = self._air_source_positions.get(emitter_name, (.5, .82, .18))
+        wall_axis = 0 if min(sx, 1 - sx) <= min(sy, 1 - sy) else 1
+        if wall_axis == 0:
+            wall_count, span_count = nx, ny
+            wall_fraction, span_fraction = sx, sy
+            span_length = self._air_cell_size_m[room][1] * ny
+        else:
+            wall_count, span_count = ny, nx
+            wall_fraction, span_fraction = sy, sx
+            span_length = self._air_cell_size_m[room][0] * nx
+        wall_index = 0 if wall_fraction <= .5 else wall_count - 1
+        wall_is_low = wall_index == 0
+
+        width = max(.35, float(width_m or .8))
+        sigma = max(width / 2.355, span_length / 6)
+        span_dx = span_length / span_count
+        center = span_fraction * span_length
+        slice_weights = [
+            exp(-(((index + .5) * span_dx - center) ** 2) / (2 * sigma**2))
+            for index in range(span_count)
+        ]
+        total_weight = sum(slice_weights)
+        slice_weights = [weight / total_weight for weight in slice_weights]
+
+        edges = []
+        direction = -1.0 if wall_is_low else 1.0
+        for span_index, slice_weight in enumerate(slice_weights):
+            streamfunction = [
+                [direction * slice_weight * sin(pi * u / wall_count) * sin(pi * z / nz)
+                 for z in range(nz + 1)]
+                for u in range(wall_count + 1)
+            ]
+
+            def cell(u, z):
+                if wall_axis == 0:
+                    return (z, span_index, u)
+                return (z, u, span_index)
+
+            for u in range(1, wall_count):
+                for z in range(nz):
+                    flux = streamfunction[u][z + 1] - streamfunction[u][z]
+                    upstream, downstream = ((cell(u - 1, z), cell(u, z)) if flux > 0
+                                            else (cell(u, z), cell(u - 1, z)))
+                    edges.append((upstream, downstream, abs(flux)))
+            for u in range(wall_count):
+                for z in range(1, nz):
+                    flux = -(streamfunction[u + 1][z] - streamfunction[u][z])
+                    upstream, downstream = ((cell(u, z - 1), cell(u, z)) if flux > 0
+                                            else (cell(u, z), cell(u, z - 1)))
+                    edges.append((upstream, downstream, abs(flux)))
+        return edges
+
     def _point_weights(self, room: str, x: float, y: float, z: float, *, sigma: float):
         dx, dy, dz = self._air_cell_size_m[room]
         nx, ny, nz = self._air_grid_shape[room]
@@ -515,8 +598,14 @@ class House:
         dx, dy, dz = self._air_cell_size_m[room]
         nx, ny, nz = self._air_grid_shape[room]
         sx, sy, _ = self._air_source_positions[source]
-        forward_x, forward_y = nx * dx / 2 - sx * nx * dx, ny * dy / 2 - sy * ny * dy
-        yaw = atan2(forward_y, forward_x) + radians(horizontal_deg)
+        if source in self._air_source_facing_deg:
+            # Floor-plan bearing is clockwise from north; the model's yaw is
+            # measured counter-clockwise from the positive x axis.
+            yaw = radians(self._air_source_facing_deg[source] - 90)
+        else:
+            forward_x, forward_y = nx * dx / 2 - sx * nx * dx, ny * dy / 2 - sy * ny * dy
+            yaw = atan2(forward_y, forward_x)
+        yaw += radians(horizontal_deg)
         pitch = radians(vertical_deg)
         return cos(pitch) * cos(yaw), cos(pitch) * sin(yaw), -sin(pitch)
 
@@ -1095,6 +1184,15 @@ class House:
             cell_capacity = zone.air_capacity / cell_count
             mix, buoyancy, fan = self._grid_conductances(name)
             fan = tuple(value * fan_mixing[name] for value in fan)
+            circulation_edges = []
+            for emitter_name, detail in self.hydronics.details.items():
+                if detail["zone"] == name:
+                    scale = max(0.0, detail.get("convective_heat_kw", 0.0)) / AIR_RADIATOR_PLUME_DELTA_C
+                    circulation_edges.extend(
+                        (upstream, downstream, shape * scale)
+                        for upstream, downstream, shape
+                        in self._air_circulation_patterns.get(emitter_name, ())
+                    )
             transfer = [[[0.0 for _ in range(nx)] for _ in range(ny)] for _ in range(nz)]
             for (room_name, (iz, iy, ix)), flow in opening_cell_flow.items():
                 if room_name == name:
@@ -1119,6 +1217,14 @@ class House:
                             rising = max(0.0, lower - upper) * buoyancy[2]
                             transfer[iz][iy][ix] -= rising
                             transfer[iz + 1][iy][ix] += rising
+            # Upwind heat transport along the divergence-free room vector
+            # field. Equal inflow and outflow at each cell conserve energy.
+            for upstream, downstream, flow_capacity in circulation_edges:
+                flow = flow_capacity * (
+                    grid[upstream[0]][upstream[1]][upstream[2]]
+                    - grid[downstream[0]][downstream[1]][downstream[2]]
+                )
+                transfer[downstream[0]][downstream[1]][downstream[2]] += flow
             for source_name, fan_fraction in fan_sources[name]:
                 horizontal_deg, vertical_deg = plan.airflow_angles_deg.get(
                     source_name, (self.sources[source_name].horizontal_angle_deg,
