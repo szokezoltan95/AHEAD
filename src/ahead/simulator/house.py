@@ -238,7 +238,8 @@ class House:
             for cell_a in cells[0]:
                 if not remaining:
                     break
-                index = min(remaining, key=lambda i: (cells[1][i][3] - cell_a[3]) ** 2 +
+                first_height = cell_a[3] + opening.get("first_sill_m", 0)
+                index = min(remaining, key=lambda i: (cells[1][i][3] + opening.get("second_sill_m", 0) - first_height) ** 2 +
                             (cells[1][i][4] - cell_a[4]) ** 2)
                 remaining.remove(index)
                 pairs.append((cell_a[0], cells[1][index][0]))
@@ -480,10 +481,11 @@ class House:
         tangent_size = dx if along_x else dy
         tangent_count = nx if along_x else ny
         plane_side = {"north": "low", "west": "low", "south": "high", "east": "high"}[side]
+        sill = opening.get(f"{prefix}_sill_m", 0)
         cells = []
         for iz in range(nz):
             z = (iz + .5) * dz
-            if z > opening["height_m"] + dz / 2:
+            if z < sill - dz / 2 or z > sill + opening["height_m"] + dz / 2:
                 continue
             for tangent_index in range(tangent_count):
                 tangent = (tangent_index + .5) * tangent_size

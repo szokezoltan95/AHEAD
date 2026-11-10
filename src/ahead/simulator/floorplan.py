@@ -165,9 +165,11 @@ def compile_air_openings(plan, rows, rectangles=None):
                     raise ValueError("Both rooms need generated floorplan walls for an interior door or portal")
                 first_floor, first_ceiling = _vertical_extent(room, rows["levels"])
                 other_floor, other_ceiling = _vertical_extent(rows["rooms"][other_name], rows["levels"])
-                if not _same(first_floor, other_floor):
-                    raise ValueError("Interior doors and portals require rooms at the same floor elevation")
-                if height > min(first_ceiling, other_ceiling) - first_floor + TOLERANCE:
+                # A shared opening starts at the higher of the two floors. Its
+                # height must fit in the vertical overlap of both rooms.
+                opening_floor = max(first_floor, other_floor)
+                shared_ceiling = min(first_ceiling, other_ceiling)
+                if height > shared_ceiling - opening_floor + TOLERANCE:
                     raise ValueError("Door or portal height exceeds the shared wall height")
                 if kind == "entry_door":
                     if "unheated" not in {rows["rooms"][room_name]["preset"],
@@ -187,6 +189,8 @@ def compile_air_openings(plan, rows, rectangles=None):
                     "first_room": room_name, "second_room": other_name,
                     "first_side": side, "second_side": OPPOSITE[side],
                     "first_offset_m": distance, "second_offset_m": center - other_start,
+                    "first_sill_m": opening_floor - first_floor,
+                    "second_sill_m": opening_floor - other_floor,
                     "axis": axis, "plane_m": anchor, "left_m": left, "right_m": right,
                     "width_m": width, "height_m": height, "kind": kind,
                     "openness": openness,
@@ -363,11 +367,11 @@ def derive_envelope(plan, rows):
                     ):
                         continue
                     raise ValueError(f"An opening must fit on an exterior portion of {name}'s {side} wall")
-    _horizontal_surfaces(derived, rectangles, rows)
+    _horizontal_surfaces(derived, rectangles, rows, layouts)
     return rectangles
 
 
-def _horizontal_surfaces(derived, rectangles, rows):
+def _horizontal_surfaces(derived, rectangles, rows, layouts):
     for name in sorted(derived):
         room = rows["rooms"][name]
         floor, ceiling = _vertical_extent(room, rows["levels"])

@@ -14,6 +14,29 @@ def example():
 
 
 class FloorplanTests(unittest.TestCase):
+    def test_portal_connects_rooms_with_different_floor_elevations(self):
+        project = example()
+        rooms = {room["id"]: room for room in project["rooms"]}
+        for name in ("living", "kitchen"):
+            project["floorplan"]["rooms"][name]["derive"] = True
+        rooms["living"]["floor_offset_m"] = -.44
+        project["floorplan"]["rooms"]["living"]["walls"] = {
+            "east": {"openings": [
+                {"type": "portal", "distance": 2, "width": .9, "height": 2},
+            ]}
+        }
+
+        scenario, _ = compile_project(project)
+        house = scenario.house
+
+        self.assertTrue(house._air_opening_edges)
+        first, first_cell, second, second_cell, _ = house._air_opening_edges[0]
+        first_dz = house._air_cell_size_m[first][2]
+        second_dz = house._air_cell_size_m[second][2]
+        first_world_z = (first_cell[0] + .5) * first_dz + .44
+        second_world_z = (second_cell[0] + .5) * second_dz
+        self.assertLess(abs(first_world_z - second_world_z), max(first_dz, second_dz))
+
     def test_adjacent_rooms_share_one_wall_and_window_uses_drawn_area(self):
         project = example()
         for name in ("living", "kitchen"):

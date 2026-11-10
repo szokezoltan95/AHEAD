@@ -194,16 +194,17 @@ function paint(canvas,plan,rooms,floor,box,liveSources=null) {
         }
         for (const side of sides) {
             const [first,last] = wallLine(position,room,side);
-            if (drawing && activeTool === "wall") {
+            if (drawing && ["wall","opening"].includes(activeTool)) {
                 canvas.append(line(first,last,{class:"plan-wall","data-room":name,"data-wall":side}));
             }
-            for (const opening of location.walls?.[side]?.openings || []) {
+            for (const [openingIndex,opening] of (location.walls?.[side]?.openings || []).entries()) {
                 const axis = first.y === last.y ? "x" : "y";
                 const middle = first[axis]+opening.distance;
                 const beginning = {...first,[axis]:middle-opening.width/2};
                 const ending = {...first,[axis]:middle+opening.width/2};
                 const type = opening.type || "window";
-                canvas.append(line(beginning,ending,{class:"plan-opening plan-opening-"+type}));
+                canvas.append(line(beginning,ending,{class:"plan-opening plan-opening-"+type,
+                    "data-room":name,"data-wall":side,"data-opening":openingIndex}));
                 if (type === "door" || type === "entry_door") {
                     const hingeAtEnd = opening.swing_side === "right";
                     const hinge = hingeAtEnd ? ending : beginning;
@@ -453,13 +454,15 @@ if (!objectsButton) {
 if (objectsButton) objectsButton.onclick=()=>openObjectManager();
 function selectTool(tool) {
     activeTool = tool; routePoint = ""; selectedPipes.clear();
+    $("plan-svg").dataset.tool = tool;
     for (const button of document.querySelectorAll("button[data-tool]")) {
         button.setAttribute("aria-pressed",button.dataset.tool === tool);
     }
     const tips = {
         select:"Click for settings. Drag rooms or connection points to move them. Shift-click pipes to select several.",
         room:"Drag a rectangle to draw a room.",
-        wall:"Click a wall edge to choose a construction or add an opening.",
+        wall:"Click a wall edge to edit its construction.",
+        opening:"Click a window, door, or portal to edit it. Click the wall to add an opening.",
         equipment:"Click a position to place a radiator, boiler, or circuit connection.",
         pipe:"Select a circuit and click two points. Click an existing point to connect. Continue to add bends.",
         junction:"Click a drawn pipe to split it and create a connection point."
@@ -574,18 +577,20 @@ function roomDialog(name,box) {
         planData().rooms[draft.id] = {x:placement.x,y:placement.y,derive:placement.derive,walls:placement.walls || {}};
     },remove);
 }
-function wallDialog(name,side) {
+function wallDialog(name,side,mode="wall") {
     const room = roomMap(project)[name], placement = planData().rooms[name];
     if (!room || !placement) return;
     const wall = structuredClone(placement.walls?.[side] || {construction:"insulated_brick",openings:[]});
     const extent = ["north","south"].includes(side) ? room.length_m : room.width_m;
     function show() {
-        const fields = [input("Exterior construction",wall.construction,next => wall.construction=next,
-            catalogue.wall_types.filter(type => !["insulated_ceiling","insulated_floor","partition"].includes(type))),
-            input("Buried wall height (m)",wall.ground_height_m ?? 0,next => wall.ground_height_m=next)];
+        const fields = [];
+        if (mode === "wall") fields.push(
+            input("Exterior construction",wall.construction,next => wall.construction=next,
+                catalogue.wall_types.filter(type => !["insulated_ceiling","insulated_floor","partition"].includes(type))),
+            input("Buried wall height (m)",wall.ground_height_m ?? 0,next => wall.ground_height_m=next));
         wall.openings ??= [];
         if (!placement.derive) fields.push(el("small","Enable generated walls in the room settings to use these values in the simulation."));
-        for (const [index,opening] of wall.openings.entries()) {
+        for (const [index,opening] of (mode === "opening" ? wall.openings : []).entries()) {
             const entry = el("fieldset"); entry.append(el("legend",`Opening ${index+1}`),
                 input("Opening type",opening.type || "window",next => {
                     opening.type=next;
@@ -629,11 +634,11 @@ function wallDialog(name,side) {
             entry.append(extraButton("Remove opening",() => { wall.openings.splice(index,1); show(); }));
             fields.push(entry);
         }
-        dialog(`${human(name)} · ${side} wall`,fields,() => {
+        dialog(`${human(name)} · ${side} ${mode === "wall" ? "wall" : "openings"}`,fields,() => {
             if (wall.openings.some(o => !(o.width > 0 && o.height > 0 && o.distance >= o.width/2 &&
                 o.distance+o.width/2 <= extent))) return "Every opening must fit inside this wall.";
             placement.walls ??= {}; placement.walls[side] = wall;
-        },[
+        },mode === "opening" ? [
             extraButton("Add window",() => {
                 wall.openings.push({type:"window",preset:"double_glazed",distance:extent/2,
                     width:Math.min(1.2,extent),height:1.1}); show();
@@ -650,7 +655,7 @@ function wallDialog(name,side) {
                 wall.openings.push({type:"entry_door",preset:"insulated_entry_door",distance:extent/2,
                     width:Math.min(.9,extent),height:2.0,u_w_m2k:1.0,
                     area_heat_capacity_kwh_m2k:.025,swing_side:"left",swing_direction:"into_room"}); show();
-            })]);
+            })] : []);
     }
     show();
 }
@@ -906,7 +911,12 @@ editor.addEventListener("pointerdown",event => {
     if (activeTool === "pipe") { drawPipe(point,target.node); return; }
     if (activeTool === "junction") { if (target.pipe) splitPipe(target.pipe,point); return; }
     if (activeTool === "equipment") { equipmentDialog(point); return; }
-    if (activeTool === "wall") { if (target.wall) wallDialog(target.room,target.wall); return; }
+    if (activeTool === "wall") { if (target.wall) wallDialog(target.room,target.wall,"wall"); return; }
+    if (activeTool === "opening") {
+        if (target.opening !== undefined) wallDialog(target.room,target.wall,"opening");
+        else if (target.wall) wallDialog(target.room,target.wall,"opening");
+        return;
+    }
     if (activeTool === "select" && target.pipe) {
         if (event.shiftKey) {
             if (selectedPipes.has(target.pipe)) selectedPipes.delete(target.pipe);
