@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 20544)
-Total output lines: 1530
-
 """Thermal network for rooms, fabric, shared hydronics, and heat sources.
 
 Heat flows are in kW and thermal capacities are in kWh/K. Each heat transfer
@@ -804,7 +801,47 @@ class House:
     def return_c(self) -> float | None:
         return self.hydronics.circuits.get(self._first_loop, {}).get("return_c")
 
-    …544 tokens truncated…_details,
+    @property
+    def flow_l_min(self) -> float:
+        return self.hydronics.circuits.get(self._first_loop, {}).get("flow_l_min", 0.0)
+
+    def air_temperature_at(self, room: str, x_m: float, y_m: float, z_m: float) -> float:
+        """Return the nearest modeled air-cell temperature at room-local coordinates."""
+        if room not in self._air_cells:
+            raise KeyError(f"Unknown room: {room}")
+        nx, ny, nz = self._air_grid_shape[room]
+        dx, dy, dz = self._air_cell_size_m[room]
+        ix = min(nx - 1, max(0, int(x_m / dx)))
+        iy = min(ny - 1, max(0, int(y_m / dy)))
+        iz = min(nz - 1, max(0, int(z_m / dz)))
+        return self._air_cells[room][iz][iy][ix]
+
+    def diagnostics(self) -> dict:
+        return {
+            "rooms": {
+                name: {"air_c": self._air[name], "fabric_c": self._fabric[name],
+                       "contents_c": self._contents[name],
+                       "humidity_pct": relative_humidity(self._air[name], self._moisture[name]),
+                       "air_cells_c": [[row.copy() for row in layer]
+                                       for layer in self._air_cells[name]],
+                       "air_grid": {
+                           "shape": list(self._air_grid_shape[name]),
+                           "cell_size_m": list(self._air_cell_size_m[name]),
+                           "z_centers_m": [(index + .5) * self._air_cell_size_m[name][2]
+                                           for index in range(self._air_grid_shape[name][2])],
+                       },
+                       "air_currents": self._air_currents[name],
+                       **self._room_flux.get(name, {})}
+                for name in self.zones
+            },
+            "circuits": {
+                name: {**self.hydronics.circuits.get(name, {}), "supply_c": temperature,
+                       "target_c": self.hydronics.loops[name].target_c}
+                for name, temperature in self.hydronics.water.items()
+            },
+            "emitters": self.hydronics.details,
+            "pipes": self.hydronics.pipe_network.details if self.hydronics.pipe_network else {},
+            "sources": self._source_details,
             "outdoor_units": self._outdoor_details,
             "heat_exchangers": self._exchanger_details,
             "balance": self._balance,
