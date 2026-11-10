@@ -321,6 +321,127 @@ function extraButton(label,action) {
     const button = el("button",label); button.type = "button"; button.onclick = action;
     return button;
 }
+function configField(section,row,key,defaultValue) {
+    let options = references[key] ? ["",...(project[references[key]] || []).map(item => item.id)] : null;
+    if (key === "boundary") options = ["outdoors","room","ground","adiabatic"];
+    if (key === "mode_rule") options = ["largest_demand","heat_priority","cool_priority"];
+    if (key === "allocation") options = ["proportional","in_order"];
+    const label = section === "events" && key === "opening_fraction"
+        ? "Opening fraction (0–1)" : human(key);
+    return input(label,row[key] ?? defaultValue,next => row[key]=next,options,
+        key === "start_s" || (section === "events" && key === "duration_s"));
+}
+function editObject(section,id) {
+    if (section === "settings") {
+        const draft = {...(project.settings || {})};
+        const keys=new Set([...Object.keys(catalogue.settings),...Object.keys(draft)]);
+        const fields=[...keys].map(key => configField("settings",draft,key,catalogue.settings[key]));
+        dialog("House location and simulation settings",fields,() => {
+            project.settings = {...project.settings,...draft};
+        });
+        return;
+    }
+    const rows = list(section), index = rows.findIndex(row => row.id === id);
+    if (index < 0) return;
+    const row = rows[index], draft = {...row}, presets = catalogue.presets[section];
+    function show() {
+        const defaults = presets[draft.preset] || {};
+        const fields = [
+            input("Object ID",draft.id,next => draft.id=next),
+            input("Preset",draft.preset,next => { draft.preset=next; show(); },
+                Object.keys(presets),false,show)
+        ];
+        const advanced = el("fieldset");
+        advanced.append(el("legend","Object settings"));
+        const keys = new Set([...Object.keys(defaults),...Object.keys(draft)]);
+        keys.delete("id"); keys.delete("preset");
+        for (const key of keys) {
+            const value = draft[key] ?? defaults[key];
+            if (value === undefined || (value && typeof value === "object")) continue;
+            advanced.append(configField(section,draft,key,defaults[key]));
+        }
+        fields.push(advanced);
+        dialog((names[section] || human(section))+" · "+draft.id,fields,() => {
+            if (!/^[a-zA-Z0-9_-]{1,64}$/.test(draft.id) ||
+                rows.some((item,itemIndex) => itemIndex !== index && item.id === draft.id)) {
+                return "Enter a unique ID using letters, digits, underscores or hyphens.";
+            }
+            if (draft.id !== row.id) renameReferences(section,row.id,draft.id);
+            Object.assign(row,draft);
+        },[
+            extraButton("Duplicate",() => {
+                let suffix=2;
+                while (rows.some(item => item.id===draft.id+"_"+suffix)) suffix++;
+                rows.push({...draft,id:draft.id+"_"+suffix});
+                $("plan-dialog").close(); redrawForms(); openObjectManager(section);
+            }),
+            extraButton("Remove",() => {
+                rows.splice(index,1);
+                $("plan-dialog").close(); redrawForms(); openObjectManager(section);
+            })
+        ]);
+    }
+    show();
+}
+function objectManagerDialog(section) {
+    const groups = ["settings",...Object.keys(catalogue.presets)];
+    const picker = el("div"), filters=el("div"), listBox=el("div");
+    filters.className="toolbar";
+    listBox.style.maxHeight="52vh"; listBox.style.overflowY="auto";
+    const group=el("select");
+    for (const key of groups) {
+        const option=el("option",key==="settings" ? "House settings" : (names[key] || human(key)));
+        option.value=key; group.append(option);
+    }
+    group.value=groups.includes(section) ? section : "settings";
+    const search=el("input"); search.type="search"; search.placeholder="Find an object…";
+    search.setAttribute("aria-label","Find an object");
+    filters.append(group,search);
+    function render() {
+        const key=group.value, query=search.value.trim().toLowerCase();
+        listBox.replaceChildren();
+        if (key==="settings") {
+            const card=el("fieldset");
+            card.append(el("legend","House settings"),
+                el("p","Location, orientation, weather timing, and simulation controls."),
+                extraButton("Edit house settings",()=>editObject("settings")));
+            listBox.append(card); return;
+        }
+        const rows=list(key), presets=catalogue.presets[key];
+        const addBar=el("div"); addBar.className="toolbar";
+        const preset=el("select"); preset.setAttribute("aria-label","Preset for "+(names[key] || human(key)));
+        for (const value of Object.keys(presets)) {
+            const option=el("option",human(value)); option.value=value; preset.append(option);
+        }
+        addBar.append(preset,extraButton("Add object",() => {
+            let suffix=rows.length+1;
+            while (rows.some(row => row.id===preset.value+"_"+suffix)) suffix++;
+            const id=preset.value+"_"+suffix;
+            rows.push({id,preset:preset.value});
+            redrawForms(); editObject(key,id);
+        }));
+        listBox.append(addBar);
+        const matches=rows.filter(row=>row.id.toLowerCase().includes(query));
+        if (!matches.length) listBox.append(el("p",query ? "No matching objects." : "No objects yet."));
+        for (const row of matches) {
+            const card=el("fieldset");
+            card.append(el("legend",row.id+" · "+human(row.preset)),
+                extraButton("Edit settings",()=>editObject(key,row.id)));
+            listBox.append(card);
+        }
+    }
+    group.onchange=render; search.oninput=render; render();
+    picker.append(filters,listBox);
+    const form=$("plan-form");
+    $("plan-dialog-title").textContent="Configure house objects";
+    const footer=el("div"); footer.className="toolbar";
+    footer.append(extraButton("Close",()=>$("plan-dialog").close()));
+    form.replaceChildren(picker,footer);
+    form.onsubmit=event=>event.preventDefault();
+    if (!$("plan-dialog").open) $("plan-dialog").showModal();
+}
+function openObjectManager(section="settings") { objectManagerDialog(section); }
+$("#objects").onclick=()=>openObjectManager();
 function selectTool(tool) {
     activeTool = tool; routePoint = ""; selectedPipes.clear();
     for (const button of document.querySelectorAll("button[data-tool]")) {
@@ -412,10 +533,20 @@ function roomDialog(name,box) {
     const fields = [];
     if (!existing) fields.push(input("Room ID",draft.id,next => draft.id=next));
     fields.push(input("Room type",draft.preset,next => draft.preset=next,["conditioned","unheated"]),
+        input("Floor",draft.level,next => draft.level=next,list("levels").map(row => row.id)),
         input("Length east–west (m)",draft.length_m,next => draft.length_m=next),
         input("Width north–south (m)",draft.width_m,next => draft.width_m=next),
         input("Room height (m, 0 uses floor default)",draft.height_m ?? 0,next => draft.height_m=next),
         input("Generate walls from the drawing",placement.derive,next => placement.derive=next));
+    const roomSettings=el("fieldset"); roomSettings.append(el("legend","Thermal and air settings"));
+    const roomDefaults=catalogue.presets.rooms[draft.preset] || {};
+    for (const key of new Set([...Object.keys(roomDefaults),...Object.keys(draft)])) {
+        if (["id","preset","level","length_m","width_m","height_m"].includes(key)) continue;
+        if (draft[key] !== undefined || roomDefaults[key] !== undefined) {
+            roomSettings.append(configField("rooms",draft,key,roomDefaults[key]));
+        }
+    }
+    fields.push(roomSettings);
     const remove = existing ? [extraButton("Remove from plan",() => {
         if (Object.values(planData().pipes).some(pipe => pipe.room === name && pipe.wall)) {
             $("plan-dialog-error").textContent = "Move or remove the pipes anchored to this room's walls first.";
@@ -567,7 +698,7 @@ function equipmentDialog(point,nodeId) {
             draft.facing_deg ?? roomCenterFacing(draft,placedSource.room || room),
             next => draft.facing_deg=next));
         if (draft.kind === "circuits" && !list("circuits").length) {
-            fields.push(el("small","Add a water circuit in Advanced configuration first."));
+            fields.push(el("small","Add a water circuit from Configure objects first."));
         }
         dialog(current ? "Equipment connection" : "Place equipment",fields,() => {
             if (!draft.equipment || !Number.isFinite(draft.height_mm) || draft.height_mm < -2000 || draft.height_mm > 10000) {
@@ -598,12 +729,20 @@ function equipmentDialog(point,nodeId) {
             }
             if (current) Object.assign(current,draft);
             else addPoint(point,draft);
-        },current ? [extraButton("Remove from plan",() => {
+        },[
+            ...(current && placedSource ? [extraButton("Advanced device settings",() =>
+                editObject("sources",placedSource.id))] : []),
+            ...(current && draft.kind === "emitters" && find("emitters",draft.equipment)
+                ? [extraButton("Advanced device settings",() => editObject("emitters",draft.equipment))] : []),
+            ...(current && draft.kind === "circuits" && find("circuits",draft.equipment)
+                ? [extraButton("Advanced circuit settings",() => editObject("circuits",draft.equipment))] : []),
+            ...(current ? [extraButton("Remove from plan",() => {
             if (Object.values(planData().pipes).some(pipe => [pipe.first,pipe.last].includes(nodeId))) {
                 $("plan-dialog-error").textContent = "Remove the connected pipes first."; return;
             }
             delete planData().nodes[nodeId]; $("plan-dialog").close(); redrawForms();
-        })] : []);
+        })] : [])
+        ]);
     }
     show();
 }
@@ -747,7 +886,7 @@ function pipeDialog(name) {
             },[extraButton("Remove segment",() => {
                 for (const id of bulk) delete plan.pipes[id];
                 selectedPipes.clear(); $("plan-dialog").close(); drawPlan();
-            })]);
+            }),extraButton("Configure water circuit",() => editObject("circuits",current.circuit))]);
     }
     show();
 }

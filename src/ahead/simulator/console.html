@@ -110,6 +110,7 @@
 <button id="blank" data-icon="plan">Start blank</button>
 <button id="download" data-icon="download">Export JSON</button>
 <button id="import" data-icon="upload">Import JSON</button>
+<button id="objects" data-icon="layers">Configure objects</button>
 <input id="upload" type="file" accept=".json,application/json" hidden>
 </div>
 <div id="message" role="status"></div>
@@ -136,7 +137,6 @@
 <svg class="plan-canvas" id="plan-svg" aria-label="Floor plan editor"></svg>
 <p class="plan-help"><span class="pipe-supply">● Supply</span> &nbsp; <span class="pipe-return">● Return</span> &nbsp; Grid 0.25 m · Select a pipe for mounting, offsets and height.</p>
 </section>
-<details><summary>Advanced configuration</summary><div id="forms"></div></details>
 <dialog id="plan-dialog"><h2 id="plan-dialog-title"></h2><form id="plan-form"></form></dialog>
 </main>
 <script>
@@ -283,77 +283,7 @@ function input(label, value, changed, options, whole = false, refreshed = null) 
 }
 
 function redrawForms() {
-    const open = new Set([...$("forms").querySelectorAll("details[open]")].map(node => node.dataset.section));
-    $("forms").replaceChildren();
-    const settings = el("fieldset");
-    settings.append(el("legend","House location, orientation and experiment settings"));
-    project.settings ??= {};
-    for (const [key, value] of Object.entries(catalogue.settings)) {
-        settings.append(input(human(key), project.settings[key] ?? value,
-            next => project.settings[key] = next, null, Number.isInteger(value) && !["latitude","longitude","orientation_deg","ground_c"].includes(key)));
-    }
-    $("forms").append(settings);
-    for (const [section, presets] of Object.entries(catalogue.presets)) {
-        const rows = project[section] ??= [];
-        const details = el("details");
-        details.dataset.section = section;
-        details.open = open.has(section);
-        const summary = el("summary", `${names[section]} (${rows.length})`);
-        summary.prepend(icon(sectionIcons[section] || "layers"));
-        details.append(summary);
-        const add = el("button","Add");
-        const select = el("select");
-        select.setAttribute("aria-label", `Preset for ${names[section]}`);
-        for (const name of Object.keys(presets)) {
-            const option = el("option", human(name)); option.value = name; select.append(option);
-        }
-        add.onclick = () => {
-            let index = rows.length + 1;
-            while (rows.some(row => row.id === `${select.value}_${index}`)) index++;
-            rows.push({id:`${select.value}_${index}`,preset:select.value});
-            redrawForms();
-        };
-        const toolbar = el("div"); toolbar.className = "toolbar"; toolbar.append(select,add);
-        details.append(toolbar);
-        for (const [index,row] of rows.entries()) {
-            const card = el("fieldset");
-            card.append(el("legend", `${row.id} · ${human(row.preset)}`));
-            const originalId = row.id;
-            let editedId = originalId;
-            card.append(input("ID", originalId, value => editedId = value, null, false, () => {
-                if (editedId !== originalId) {
-                    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(editedId) || rows.some(item => item.id === editedId)) {
-                        message("Enter a unique ID using letters, digits, underscores or hyphens.",true);
-                    } else {
-                        row.id = editedId;
-                        renameReferences(section,originalId,editedId);
-                    }
-                }
-                redrawForms();
-            }));
-            for (const [key, defaultValue] of Object.entries(presets[row.preset] || {})) {
-                let options = references[key] ? ["", ...(project[references[key]] || []).map(item => item.id)] : null;
-                if (key === "boundary") options = ["outdoors","room","ground","adiabatic"];
-                if (key === "mode_rule") options = ["largest_demand","heat_priority","cool_priority"];
-                if (key === "allocation") options = ["proportional","in_order"];
-                const fieldLabel = section === "events" && key === "opening_fraction"
-                    ? "Opening fraction (0–1)" : human(key);
-                card.append(input(fieldLabel, row[key] ?? defaultValue, value => row[key] = value,
-                    options, key === "start_s" || (section === "events" && key === "duration_s")));
-            }
-            const duplicate = el("button","Duplicate");
-            duplicate.onclick = () => {
-                let suffix = 2;
-                while (rows.some(candidate => candidate.id === `${row.id}_${suffix}`)) suffix++;
-                rows.push({...row,id:`${row.id}_${suffix}`});
-                redrawForms();
-            };
-            const remove = el("button","Remove");
-            remove.onclick = () => { rows.splice(index,1); redrawForms(); };
-            card.append(duplicate,remove); details.append(card);
-        }
-        $("forms").append(details);
-    }
+    if (project) project.settings ??= {};
     syncPlan();
 }
 
