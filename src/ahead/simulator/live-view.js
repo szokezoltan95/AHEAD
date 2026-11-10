@@ -525,21 +525,31 @@ function drawAirCurrentArrows(state, plan, rooms, floor) {
 function updateAir3dRoomOptions(state) {
     const select=$("live-air-3d-room"),plan=state.floorplan;
     const available=Object.keys(plan?.rooms||{}).filter(name=>state.rooms?.[name]?.air_currents);
-    select.replaceChildren(...available.map(name=>{
-        const option=document.createElement("option"); option.value=name; option.textContent=name.replaceAll("_"," "); return option;
-    }));
+    const key=available.join("\u0000");
+    if (select.dataset.roomKey!==key) {
+        select.dataset.roomKey=key;
+        select.replaceChildren(...available.map(name=>{
+            const option=document.createElement("option"); option.value=name; option.textContent=name.replaceAll("_"," "); return option;
+        }));
+    }
     if (!available.includes(liveAir3dRoom)) liveAir3dRoom=available[0]||"";
-    select.value=liveAir3dRoom;
+    if (select.value!==liveAir3dRoom) select.value=liveAir3dRoom;
     $("live-air-3d-open").disabled=!available.length;
 }
 
 function drawAirCurrent3d(state) {
     const canvas=$("live-air-3d-svg"),plan=state?.floorplan;
     updateAir3dRoomOptions(state||{});
-    canvas.setAttribute("viewBox","0 0 1000 630");
     const name=liveAir3dRoom,room=state?.configured_objects?.rooms?.[name];
     const position=plan?.rooms?.[name],reading=state?.rooms?.[name],field=reading?.air_currents;
-    canvas.replaceChildren();
+    const context=canvas.getContext("2d");
+    if (!context) return;
+    const pixelRatio=Math.max(1,window.devicePixelRatio||1),canvasWidth=1000,canvasHeight=630;
+    if (canvas.width!==Math.round(canvasWidth*pixelRatio)||canvas.height!==Math.round(canvasHeight*pixelRatio)) {
+        canvas.width=Math.round(canvasWidth*pixelRatio);canvas.height=Math.round(canvasHeight*pixelRatio);
+    }
+    context.setTransform(pixelRatio,0,0,pixelRatio,0,0);
+    context.clearRect(0,0,canvasWidth,canvasHeight);
     if (!room||!position||!field) return;
     const levels=state.configured_objects?.levels||{};
     const length=room.length_m,width=room.width_m,height=room.height_m||levels[room.level]?.height_m||2.7;
@@ -557,19 +567,30 @@ function drawAirCurrent3d(state) {
         a:project(0,0,0),b:project(length,0,0),c:project(length,width,0),d:project(0,width,0),
         A:project(0,0,height),B:project(length,0,height),C:project(length,width,height),D:project(0,width,height),
     };
-    const polygon=(keys,className)=>svg("polygon",{points:keys.map(key=>corners[key].join(",")).join(" "),class:className});
-    canvas.append(polygon(["a","b","c","d"],"air-3d-floor"),
-        polygon(["a","b","B","A"],"air-3d-wall"),polygon(["b","c","C","B"],"air-3d-wall"));
+    const drawPolygon=(keys,fill,stroke)=>{
+        context.beginPath();keys.forEach((key,index)=>{
+            const [x,y]=corners[key];if(index)context.lineTo(x,y);else context.moveTo(x,y);
+        });context.closePath();context.fillStyle=fill;context.fill();context.strokeStyle=stroke;
+        context.lineWidth=1.5;context.stroke();
+    };
+    drawPolygon(["a","b","c","d"],"rgba(38,63,84,.30)","#7890a5");
+    drawPolygon(["a","b","B","A"],"rgba(38,63,84,.14)","#7890a5");
+    drawPolygon(["b","c","C","B"],"rgba(38,63,84,.10)","#7890a5");
     const edges=[["a","b"],["b","c"],["c","d"],["d","a"],["A","B"],["B","C"],["C","D"],["D","A"],["a","A"],["b","B"],["c","C"],["d","D"]];
-    for (const [first,last] of edges) canvas.append(svg("line",{
-        x1:corners[first][0],y1:corners[first][1],x2:corners[last][0],y2:corners[last][1],class:"air-3d-room-edge"}));
-    const cellGrid=reading.air_cells_c||[],maxSpeed=Math.max(.001,...vectors.flat(2).map(v=>Math.hypot(v[0],v[1],v[2])));
-    const defs=svg("defs"),marker=svg("marker",{id:"air-3d-arrowhead",viewBox:"0 0 10 10",refX:8,refY:5,
-        markerWidth:4,markerHeight:4,orient:"auto"});
-    marker.append(svg("path",{d:"M 0 0 L 10 5 L 0 10 z",fill:"context-stroke"}));defs.append(marker);canvas.append(defs);
+    context.beginPath();for(const [first,last] of edges){
+        context.moveTo(...corners[first]);context.lineTo(...corners[last]);
+    }context.strokeStyle="#73899b";context.lineWidth=2;context.stroke();
+    const cellGrid=reading.air_cells_c||[],ny=vectors[0]?.length||0,nx=vectors[0]?.[0]?.length||0;
+    const nz=vectors.length,total=nx*ny*nz,maxMarks=500;
+    let stride=1;
+    while(Math.ceil(nx/stride)*Math.ceil(ny/stride)*Math.ceil(nz/stride)>maxMarks)stride++;
+    let maxSpeed=.001;
+    for(let iz=0;iz<nz;iz+=stride)for(let iy=0;iy<ny;iy+=stride)for(let ix=0;ix<nx;ix+=stride){
+        const v=vectors[iz]?.[iy]?.[ix]||[0,0,0];maxSpeed=Math.max(maxSpeed,Math.hypot(v[0],v[1],v[2]));
+    }
     const threshold=maxSpeed*.06,cellSize=field.cell_size_m||[1,1,.5];
-    for (let iz=0;iz<vectors.length;iz++) for (let iy=0;iy<(vectors[iz]||[]).length;iy++) {
-        for (let ix=0;ix<(vectors[iz][iy]||[]).length;ix++) {
+    for (let iz=0;iz<nz;iz+=stride) for (let iy=0;iy<ny;iy+=stride) {
+        for (let ix=0;ix<nx;ix+=stride) {
             // Air-current components are serialized as [vertical, y, x].
             const [vz,vy,vx]=vectors[iz][iy][ix]||[0,0,0],speed=Math.hypot(vx,vy,vz);
             if (speed<threshold) continue;
@@ -579,18 +600,22 @@ function drawAirCurrent3d(state) {
             const gy=Math.max(0,Math.min((cellGrid[iz]?.length||1)-1,Math.floor(y/cellSize[1])));
             const temp=cellGrid[iz]?.[gy]?.[gx]??reading.air_c;
             const color=`hsl(${Math.max(0,210-(temp-16)*13)} 78% 58%)`;
-            canvas.append(svg("circle",{cx:screen[0],cy:screen[1],r:4,fill:color,class:"air-3d-cell"}));
+            context.beginPath();context.arc(screen[0],screen[1],4,0,Math.PI*2);context.fillStyle=color;context.fill();
             const distance=.18+.48*Math.sqrt(speed/maxSpeed),unit=distance/speed;
             const end=project(x+vx*unit,y+vy*unit,z+vz*unit);
             const vertical=Math.abs(vz)>=Math.hypot(vx,vy)*.7;
             const type=vertical?(vz>0?"updraft":"downdraft"):"horizontal";
-            const arrow=svg("line",{x1:screen[0],y1:screen[1],x2:end[0],y2:end[1],
-                class:`air-3d-vector ${type}`,"marker-end":"url(#air-3d-arrowhead)"});
-            const title=svg("title");title.textContent=`${name.replaceAll("_"," ")} · ${temp.toFixed(1)} °C · x ${vx.toFixed(3)}, y ${vy.toFixed(3)}, z ${vz.toFixed(3)} m/s (modeled)`;
-            arrow.append(title);canvas.append(arrow);
+            const stroke=type==="updraft"?"#e89b32":type==="downdraft"?"#a66bd1":"#54d5e8";
+            const angle=Math.atan2(end[1]-screen[1],end[0]-screen[0]);
+            context.beginPath();context.moveTo(...screen);context.lineTo(...end);context.strokeStyle=stroke;
+            context.lineWidth=2.4;context.lineCap="round";context.stroke();
+            context.beginPath();context.moveTo(end[0],end[1]);
+            context.lineTo(end[0]-7*Math.cos(angle-.48),end[1]-7*Math.sin(angle-.48));
+            context.lineTo(end[0]-7*Math.cos(angle+.48),end[1]-7*Math.sin(angle+.48));
+            context.closePath();context.fillStyle=stroke;context.fill();
         }
     }
     for (const [label,point] of [["X",project(length,0,0)],["Y",project(0,width,0)],["Z",project(0,0,height)]]) {
-        const text=svg("text",{x:point[0]+8,y:point[1]-5,class:"air-3d-axis-label"});text.textContent=label;canvas.append(text);
+        context.fillStyle="#8da2b4";context.font="700 13px sans-serif";context.fillText(label,point[0]+8,point[1]-5);
     }
 }
