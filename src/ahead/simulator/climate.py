@@ -131,8 +131,11 @@ class ClimateUnit:
         self.demand = 0.0
         if self.mode == "heat" and control_temp is not None:
             error = effective_target - control_temp
-            if error >= (0.12 if previous else 0.3):
-                self.demand = min(1, max(.15, error / (1.25 if adaptive else .8)))
+            if adaptive:
+                if error >= (0.12 if previous else 0.3):
+                    self.demand = min(1, max(.15, error / 1.25))
+            elif (previous and error > 0) or error >= 0.3:
+                self.demand = 1.0
             if adaptive and previous and not self.demand:
                 self.coast_until_s = elapsed+600
                 self.coast_peak = control_temp
