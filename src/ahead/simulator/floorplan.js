@@ -336,6 +336,26 @@ function extraButton(label,action) {
     return button;
 }
 function configField(section,row,key,defaultValue) {
+    if (section === "temperature_sensors" && key === "transmit_interval_s") {
+        const wrapper = el("label", "Transmit frequency");
+        const field = el("select");
+        const choices = [
+            [60,"1 minute"],[120,"2 minutes"],[300,"5 minutes"],[600,"10 minutes"],
+            [900,"15 minutes"],[1800,"30 minutes"],[3600,"1 hour"],[21600,"6 hours"],
+            [43200,"12 hours"],[86400,"24 hours"]
+        ];
+        const value = row[key] ?? defaultValue;
+        if (!choices.some(([seconds]) => seconds === value)) {
+            choices.unshift([value, `${value} seconds (custom)`]);
+        }
+        for (const [seconds,label] of choices) {
+            const option = el("option",label); option.value = seconds; field.append(option);
+        }
+        field.value = value;
+        field.onchange = () => row[key] = Number(field.value);
+        wrapper.append(field);
+        return wrapper;
+    }
     let options = references[key] ? ["",...(project[references[key]] || []).map(item => item.id)] : null;
     if (key === "boundary") options = ["outdoors","room","ground","adiabatic"];
     if (key === "mode_rule") options = ["largest_demand","heat_priority","cool_priority"];

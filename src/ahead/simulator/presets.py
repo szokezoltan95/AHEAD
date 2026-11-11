@@ -117,7 +117,8 @@ PRESETS = {
                        "finish_r_m2k_w": 0.04, "travel_s": 120.0},
     },
     "temperature_sensors": {
-        "room_sensor": {"room": "", "offset_c": 0.0, "noise_c": 0.0},
+        "room_sensor": {"room": "", "offset_c": 0.0, "noise_c": 0.0,
+                         "transmit_interval_s": 300},
     },
     "sources": {
         "gas_on_off": {"circuit": "", "capacity_kw": 12.0, "efficiency": 0.86,

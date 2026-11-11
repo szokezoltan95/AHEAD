@@ -69,6 +69,7 @@ class MqttHouse:
         self.climate = ClimateControls(scenario.house, self.root)
         self._resume_topic = f"{self.root}/automatic_heat_calls/press"
         self._elapsed_s = 0.0
+        self._last_temperature_sensor_publish_s = {}
         self.discovery_registry = discovery_registry if discovery_registry is not None else {}
         self.discovery_topic = f"{discovery_prefix}/device/ahead_{house_id}/config"
         equipment = scenario.house.equipment
@@ -440,8 +441,15 @@ class MqttHouse:
                if self.scenario.house.sources[name].report_heat
                and self.scenario.house.sources[name].direct_zone is None},
         }
-        readings.update({f"temperature_sensor_{name}": item["temperature_c"]
-                         for name, item in self.scenario.temperature_sensor_readings(sample.end_s).items()})
+        sensor_readings = self.scenario.temperature_sensor_readings(sample.end_s)
+        for sensor in self.scenario.temperature_sensors:
+            sensor_id = sensor["id"]
+            last_sent = self._last_temperature_sensor_publish_s.get(sensor_id)
+            if last_sent is None or sample.end_s - last_sent >= sensor["transmit_interval_s"]:
+                item = sensor_readings.get(sensor_id)
+                if item is not None:
+                    readings[f"temperature_sensor_{sensor_id}"] = item["temperature_c"]
+                    self._last_temperature_sensor_publish_s[sensor_id] = sample.end_s
         if self._separate_meter:
             totals = self.scenario.house.totals
             rate = sample.observation.heat_pump_price_kwh

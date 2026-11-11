@@ -112,6 +112,8 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
         _reference(sensor, "room", room_rows)
         if sensor["noise_c"] < 0:
             raise ValueError(f"Temperature sensor {sensor_id} noise must be non-negative")
+        if not 1 <= sensor["transmit_interval_s"] <= 86400:
+            raise ValueError(f"Temperature sensor {sensor_id} transmit interval must be 1–86400 seconds")
     surfaces = rows["surfaces"]
     layers = defaultdict(list)
     windows = defaultdict(list)
@@ -414,7 +416,8 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
             raise ValueError(f"Temperature sensor {sensor_id} must be placed between floor and ceiling")
         temperature_sensors.append({"id": sensor_id, "room": room_name, "x_m": x_m, "y_m": y_m,
                                     "z_m": z_m, "offset_c": sensor["offset_c"],
-                                    "noise_c": sensor["noise_c"]})
+                                    "noise_c": sensor["noise_c"],
+                                    "transmit_interval_s": sensor["transmit_interval_s"]})
     paths = pipe_paths(pipes, nodes, emitters, {source.name: source for source in sources})
     pipe_network = PipeNetwork(
         pipes, paths,
