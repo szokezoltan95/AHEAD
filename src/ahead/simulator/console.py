@@ -123,6 +123,7 @@ class Console:
         remote_state = {}
         state_fields = {"target": "target_c", "sensor_source": "selected_sensor_source",
                         "external_temperature": "external_c", "sensor_offset": "sensor_offset_c",
+                        "deadband": "deadband_c",
                         "overshoot": "overshoot_correction_c"}
         for key, unit in climates.items():
             if key in self.remote_devices:

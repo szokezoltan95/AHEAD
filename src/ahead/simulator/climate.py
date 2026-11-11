@@ -14,6 +14,7 @@ TRV_NUMBERS = {
     "external_temperature": ("External temperature input", -30, 65, .1),
     "sensor_offset": ("Sensor correction", -10, 10, .1),
     "overshoot": ("Early cut-off correction", 0, 5, .1),
+    "deadband": ("Turn-on deadband", 0, 3, .1),
 }
 
 
@@ -42,6 +43,7 @@ class ClimateUnit:
     sensor_source: str = "built_in"
     sensor_offset: float = 0
     overshoot: float = 0
+    deadband: float = .3
     external_temperature: float | None = None
     external_time: float = float("-inf")
     local_warming: float = 0
@@ -132,9 +134,9 @@ class ClimateUnit:
         if self.mode == "heat" and control_temp is not None:
             error = effective_target - control_temp
             if adaptive:
-                if error >= (0.12 if previous else 0.3):
+                if error > 0 and error >= (0.12 if previous else self.deadband):
                     self.demand = min(1, max(.15, error / 1.25))
-            elif (previous and error > 0) or error >= 0.3:
+            elif error > 0 and (previous or error >= self.deadband):
                 self.demand = 1.0
             if adaptive and previous and not self.demand:
                 self.coast_until_s = elapsed+600
@@ -152,6 +154,7 @@ class ClimateUnit:
             "local_warming_c": self.local_warming, "room_sensor_c": readings["room_sensor"],
             "external_c": external, "control_c": control_temp, "sensor_source": used,
             "selected_sensor_source": self.sensor_source, "sensor_offset_c": self.sensor_offset,
+            "deadband_c": self.deadband,
             "overshoot_correction_c": self.overshoot, "learned_overshoot_c": self.learned,
             "effective_target_c": effective_target,
         }
@@ -232,7 +235,8 @@ class ClimateControls:
 
     def mqtt_fields(self, unit):
         if unit.kind == "trv":
-            return ("mode", "target", "preset", "sensor_source", "external_temperature", "sensor_offset")
+            return ("mode", "target", "preset", "sensor_source", "external_temperature",
+                    "sensor_offset", "deadband")
         fields = ("mode", "target")
         if unit.fan_control:
             fields += ("preset", "fan")
@@ -307,7 +311,7 @@ class ClimateControls:
             if "humidity_target" in paired:
                 climate.update(min_humidity=35,max_humidity=80)
         else:
-            for field in ("external_temperature", "sensor_offset"):
+            for field in ("external_temperature", "sensor_offset", "deadband"):
                 label, low, high, step = TRV_NUMBERS[field]
                 key = unit.key+"_"+field
                 components[key] = {
@@ -415,7 +419,8 @@ class ClimateControls:
             if unit.kind == "trv":
                 emitter = self.house.hydronics.details.get(unit.name,{})
                 values.update(sensor_source=state["selected_sensor_source"],
-                    sensor_offset=state["sensor_offset_c"],external_temperature=state["external_c"])
+                    sensor_offset=state["sensor_offset_c"],external_temperature=state["external_c"],
+                    deadband=state["deadband_c"])
                 if self.house.hydronics.emitters[unit.name].report_valve_opening:
                     values["opening"] = emitter.get("opening",0)*100
                 heat = emitter.get("room_heat_kw",0)
