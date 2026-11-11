@@ -53,6 +53,9 @@ class Zone:
     initial_humidity_pct: float = 50
     contents_capacity_kwh_k: float = 0
     air_contents_kw_k: float = 0
+    fabric_core_capacity_kwh_k: float = 0
+    fabric_core_kw_k: float = 0
+    fabric_surface_outside_kw_k: float = 0
 
 
 @dataclass(frozen=True)
@@ -223,6 +226,7 @@ class House:
             ]
 
         self._fabric = self._air.copy()
+        self._fabric_core = self._air.copy()
         self._contents = self._air.copy()
         self._moisture = {
             zone.name: humidity_ratio(zone.initial_c, zone.initial_humidity_pct) for zone in zones
@@ -331,7 +335,8 @@ class House:
             _check((zone.air_fabric_kw_k, zone.fabric_outside_kw_k, zone.infiltration_kw_k,
                     zone.solar_area_m2, zone.radiator_kw_k, zone.radiator_flow_l_min,
                     zone.base_gains_kw, zone.ground_kw_k, zone.contents_capacity_kwh_k,
-                    zone.air_contents_kw_k))
+                    zone.air_contents_kw_k, zone.fabric_core_capacity_kwh_k,
+                    zone.fabric_core_kw_k, zone.fabric_surface_outside_kw_k))
             if zone.air_contents_kw_k and not zone.contents_capacity_kwh_k:
                 raise ValueError("Room contents need positive thermal capacity")
             if zone.radiator_kw_k and not zone.radiator_flow_l_min:
@@ -446,7 +451,10 @@ class House:
         # Bound each explicit integration step by the fastest thermal node.
         max_rate = max(max(
             air_conductance[z.name] / z.air_capacity,
-            (z.air_fabric_kw_k + z.fabric_outside_kw_k + z.ground_kw_k) / z.fabric_capacity,
+            ((z.air_fabric_kw_k + z.fabric_core_kw_k + z.fabric_surface_outside_kw_k)
+             / z.fabric_capacity
+             if z.fabric_core_capacity_kwh_k else
+             (z.air_fabric_kw_k + z.fabric_outside_kw_k + z.ground_kw_k) / z.fabric_capacity),
             z.air_contents_kw_k / z.contents_capacity_kwh_k if z.contents_capacity_kwh_k else 0,
         ) for z in zones)
         for zone in zones:
@@ -456,6 +464,12 @@ class House:
             # exchange below, so it does not constrain the house-wide step.
             grid_rate = buoyancy[2] / cell_capacity
             max_rate = max(max_rate, grid_rate)
+            if zone.fabric_core_capacity_kwh_k:
+                max_rate = max(max_rate,
+                    (zone.air_fabric_kw_k + zone.fabric_core_kw_k + zone.fabric_surface_outside_kw_k)
+                    / zone.fabric_capacity,
+                    (zone.fabric_core_kw_k + zone.fabric_outside_kw_k + zone.ground_kw_k)
+                    / zone.fabric_core_capacity_kwh_k)
         max_rate = max(max_rate, max((conductance / (self.zones[room].air_capacity /
             self._cell_count(room)) for (room, _cell), conductance in edge_cell_load.items()), default=0))
         if pipe_network:
@@ -707,6 +721,7 @@ class House:
     def checkpoint(self) -> dict:
         return {
             "air_c": self._air.copy(), "fabric_c": self._fabric.copy(),
+            "fabric_core_c": self._fabric_core.copy(),
             "contents_c": self._contents.copy(),
             "water_c": self.hydronics.water.copy(), "slab_c": self.hydronics.slab.copy(),
             "radiator_c": self.hydronics.radiator_c.copy(),
@@ -723,12 +738,16 @@ class House:
 
     def restore_checkpoint(self, snapshot: dict) -> None:
         for key, target in (("air_c", self._air), ("fabric_c", self._fabric),
+                            ("fabric_core_c", self._fabric_core),
                             ("contents_c", self._contents),
                             ("water_c", self.hydronics.water), ("slab_c", self.hydronics.slab),
                             ("radiator_c", self.hydronics.radiator_c),
                             ("moisture", self._moisture)):
             if key == "contents_c" and key not in snapshot:
                 target.update(self._air)
+                continue
+            if key == "fabric_core_c" and key not in snapshot:
+                target.update(snapshot.get("fabric_c", self._air))
                 continue
             if key == "moisture" and key not in snapshot:
                 target.update({name: humidity_ratio(self._air[name], zone.initial_humidity_pct)
@@ -816,6 +835,7 @@ class House:
         return {
             "rooms": {
                 name: {"air_c": self._air[name], "fabric_c": self._fabric[name],
+                       "fabric_core_c": self._fabric_core[name],
                        "contents_c": self._contents[name],
                        "humidity_pct": relative_humidity(self._air[name], self._moisture[name]),
                        "air_cells_c": [[row.copy() for row in layer]
@@ -1010,6 +1030,7 @@ class House:
     def _step(self, dt_h, conditions, plan, available_sources):
         air_flow = dict.fromkeys(self.zones, 0.0)
         fabric_flow = dict.fromkeys(self.zones, 0.0)
+        fabric_core_flow = dict.fromkeys(self.zones, 0.0)
         contents_flow = dict.fromkeys(self.zones, 0.0)
         moisture_flow = dict.fromkeys(self.zones, 0.0)
         air_transport_edges = {name: [] for name in self.zones}
@@ -1059,28 +1080,43 @@ class House:
         for name, zone in self.zones.items():
             air = self._air[name]
             fabric = self._fabric[name]
+            fabric_core = self._fabric_core[name]
             coupling = (fabric - air) * zone.air_fabric_kw_k
             contents_coupling = (self._contents[name] - air) * zone.air_contents_kw_k
             air_exchange = zone.infiltration_kw_k + conditions.ventilation_kw_k.get(name, 0)
             ventilation = (outdoor - air) * air_exchange
             moisture_flow[name] = (outdoor_moisture - self._moisture[name]) * air_exchange / AIR_KWH_KG_K
             moisture_flow[name] += conditions.occupied_gains_kw * 0.6 / len(self.zones)
-            shell = (outdoor - fabric) * zone.fabric_outside_kw_k
-            ground = (conditions.ground_c - fabric) * zone.ground_kw_k
+            if zone.fabric_core_capacity_kwh_k:
+                surface_core = (fabric_core - fabric) * zone.fabric_core_kw_k
+                shell = (outdoor - fabric_core) * zone.fabric_outside_kw_k
+                ground = (conditions.ground_c - fabric_core) * zone.ground_kw_k
+                surface_shell = (outdoor - fabric) * zone.fabric_surface_outside_kw_k
+                fabric_core_flow[name] = -surface_core + shell + ground
+            else:
+                surface_core = 0.0
+                shell = (outdoor - fabric) * zone.fabric_outside_kw_k
+                ground = (conditions.ground_c - fabric) * zone.ground_kw_k
+                surface_shell = 0.0
             gains = zone.base_gains_kw + appliance_gains
             sun = conditions.solar_kw_m2 * zone.solar_area_m2 + conditions.solar_by_zone_kw.get(name, 0)
             pipe_air = self.hydronics.pipe_air_heat[name]
             pipe_fabric = self.hydronics.pipe_fabric_heat[name]
             air_flow[name] = coupling + contents_coupling + ventilation + gains + emitter_heat[name] + pipe_air
-            fabric_flow[name] = -coupling + shell + ground + sun + pipe_fabric + emitter_fabric_heat[name]
+            fabric_flow[name] = (-coupling + surface_core + surface_shell + sun + pipe_fabric
+                                 + emitter_fabric_heat[name]
+                                 if zone.fabric_core_capacity_kwh_k else
+                                 -coupling + shell + ground + sun + pipe_fabric + emitter_fabric_heat[name])
             contents_flow[name] = -contents_coupling
             self._room_flux[name] = {
-                "fabric_to_air_kw": coupling, "ventilation_kw": ventilation, "envelope_kw": shell,
+                "fabric_to_air_kw": coupling, "ventilation_kw": ventilation,
+                "envelope_kw": shell + surface_shell,
                 "contents_to_air_kw": contents_coupling,
                 "ground_kw": ground, "internal_gains_kw": gains, "solar_kw": sun, "emitters_kw": emitter_heat[name],
                 "neighbours_kw": 0.0, "direct_heat_kw": 0.0,
                 "emitter_radiant_kw": emitter_fabric_heat[name],
                 "pipe_to_air_kw": pipe_air, "pipe_to_fabric_kw": pipe_fabric,
+                "fabric_surface_core_kw": surface_core,
             }
 
         heat_links = []
@@ -1432,6 +1468,9 @@ class House:
             self._air[name] = sum(sum(map(sum, layer)) for layer in self._air_cells[name]) / cell_count
             self._air_currents[name] = self._sample_air_currents(name, air_transport_edges[name])
             self._fabric[name] += fabric_flow[name] * dt_h / zone.fabric_capacity
+            if zone.fabric_core_capacity_kwh_k:
+                self._fabric_core[name] += (fabric_core_flow[name] * dt_h
+                                            / zone.fabric_core_capacity_kwh_k)
             if zone.contents_capacity_kwh_k:
                 self._contents[name] += contents_flow[name] * dt_h / zone.contents_capacity_kwh_k
             humidity = self._moisture[name] + moisture_flow[name] * dt_h / dry_air_kg[name]
@@ -1471,7 +1510,8 @@ class House:
         self.totals.heat_pump_cost += heat_pump_cost
         self.totals.cost += (imported * conditions.electricity_price_kwh + gas_kw * conditions.gas_price_kwh) * dt_h + heat_pump_cost
         self._balance = {
-            "room_air_net_kw": sum(air_flow.values()), "fabric_net_kw": sum(fabric_flow.values()),
+            "room_air_net_kw": sum(air_flow.values()),
+            "fabric_net_kw": sum(fabric_flow.values()) + sum(fabric_core_flow.values()),
             "water_net_kw": sum(water_flow.values()), "slab_net_kw": sum(slab_heat.values()),
             "electricity_kw": electricity_kw + heat_pump_kw, "gas_kw": gas_kw, "net_source_heat_kw": heat_kw,
             "house_electricity_kw": electricity_kw, "heat_pump_electricity_kw": heat_pump_kw,

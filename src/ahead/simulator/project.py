@@ -4,7 +4,7 @@ from bisect import bisect_right
 from collections import defaultdict
 from dataclasses import replace
 from datetime import datetime, timedelta
-from math import isfinite
+from math import isfinite, pi, sqrt
 from re import fullmatch
 
 from ahead.control import HysteresisController
@@ -130,9 +130,15 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
     volume = {}
     air_dimensions = {}
     envelope = defaultdict(float)
+    opaque_envelope = defaultdict(float)
+    window_envelope = defaultdict(float)
     ground = defaultdict(float)
+    opaque_ground = defaultdict(float)
+    window_ground = defaultdict(float)
     coupling = defaultdict(float)
     mass = defaultdict(float)
+    exterior_mass = defaultdict(float)
+    exterior_near_surface_mass = defaultdict(float)
     partitions = []
     surface_info = {}
     for name, row in room_rows.items():
@@ -159,11 +165,33 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
         u_area = u_value * opaque
         u_area += sum(item["area_m2"] * item["u_w_m2k"] for item in windows[name])
         conductance = u_area / 1000
+        opaque_conductance = u_value * opaque / 1000
+        window_conductance = sum(item["area_m2"] * item["u_w_m2k"] for item in windows[name]) / 1000
         material_mass = sum(
             layer["thickness_m"] * layer["density_kg_m3"] * layer["heat_capacity_j_kgk"]
             for layer in layers[name]
         ) * opaque / 3_600_000
+        penetration_depth = 0.0
+        if layers[name]:
+            room_side = layers[name][0]
+            diffusivity = room_side["conductivity_w_mk"] / (
+                room_side["density_kg_m3"] * room_side["heat_capacity_j_kgk"]
+            )
+            penetration_depth = 2 * sqrt(diffusivity * 3600 / pi)
+        remaining_depth = penetration_depth
+        near_surface_material_mass = 0.0
+        for layer in layers[name]:
+            active_thickness = min(layer["thickness_m"], remaining_depth)
+            near_surface_material_mass += (
+                active_thickness * layer["density_kg_m3"] * layer["heat_capacity_j_kgk"]
+                * opaque / 3_600_000
+            )
+            remaining_depth = max(0.0, remaining_depth - layer["thickness_m"])
         material_mass += sum(
+            item["area_m2"] * item.get("area_heat_capacity_kwh_m2k", 0.0)
+            for item in windows[name]
+        )
+        near_surface_material_mass += sum(
             item["area_m2"] * item.get("area_heat_capacity_kwh_m2k", 0.0)
             for item in windows[name]
         )
@@ -176,6 +204,9 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
         }
         share = 0.5 if boundary == "room" else 1.0
         mass[room] += material_mass * share
+        if boundary in {"outdoors", "ground"}:
+            exterior_mass[room] += material_mass
+            exterior_near_surface_mass[room] += min(material_mass, near_surface_material_mass)
         coupling[room] += row["area_m2"] * 0.003 * share
         if boundary == "room":
             adjacent = _reference(row, "adjacent_room", room_rows)
@@ -185,8 +216,12 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
                 partitions.append(Partition(room, adjacent, conductance))
         elif boundary == "outdoors":
             envelope[room] += conductance
+            opaque_envelope[room] += opaque_conductance
+            window_envelope[room] += window_conductance
         elif boundary == "ground":
             ground[room] += conductance
+            opaque_ground[room] += opaque_conductance
+            window_ground[room] += window_conductance
 
     zones = []
     for name, row in room_rows.items():
@@ -195,14 +230,29 @@ def compile_project(project: dict) -> tuple[Scenario, dict]:
         # and fabric-to-environment links without counting resistance twice.
         air_to_fabric = max(coupling[name], 2 * external)
         scale = air_to_fabric / (air_to_fabric - external) if external else 1
+        use_fabric_core = external > 0 and exterior_mass[name] > exterior_near_surface_mass[name]
+        core_capacity = (exterior_mass[name] - exterior_near_surface_mass[name]
+                         if use_fabric_core else 0.0)
+        surface_capacity = mass[name] - core_capacity
+        opaque_core_external = opaque_envelope[name] + opaque_ground[name]
+        core_link = 2 * opaque_core_external * scale if use_fabric_core else 0.0
+        core_outside = 2 * opaque_envelope[name] * scale if use_fabric_core else 0.0
+        core_ground = 2 * opaque_ground[name] * scale if use_fabric_core else 0.0
+        surface_outside = ((window_envelope[name] + window_ground[name]) * scale
+                           if use_fabric_core else 0.0)
         zones.append(Zone(
-            name, volume[name] * 1.2 * 1.005 / 3600, mass[name],
-            air_to_fabric, envelope[name] * scale, volume[name] * row["ach"] * 1.2 * 1.005 / 3600,
+            name, volume[name] * 1.2 * 1.005 / 3600, surface_capacity,
+            air_to_fabric,
+            (core_outside if use_fabric_core else envelope[name] * scale),
+            volume[name] * row["ach"] * 1.2 * 1.005 / 3600,
             row["initial_c"], row["target_c"], base_gains_kw=row["gains_kw"],
-            ground_kw_k=ground[name] * scale, conditioned=row["preset"] != "unheated",
+            ground_kw_k=(core_ground if use_fabric_core else ground[name] * scale),
+            conditioned=row["preset"] != "unheated",
             expose_sensor=row["expose_sensor"], initial_humidity_pct=row["initial_humidity_pct"],
             contents_capacity_kwh_k=row["internal_mass_kwh_k"],
             air_contents_kw_k=row["air_contents_kw_k"],
+            fabric_core_capacity_kwh_k=core_capacity, fabric_core_kw_k=core_link,
+            fabric_surface_outside_kw_k=surface_outside,
         ))
         for surface in surface_info.values():
             if surface["room"] == name:
