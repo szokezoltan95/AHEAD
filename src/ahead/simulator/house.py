@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 21805)
-Total output lines: 1611
-
 """Thermal network for rooms, fabric, shared hydronics, and heat sources.
 
 Heat flows are in kW and thermal capacities are in kWh/K. Each heat transfer
@@ -790,7 +787,151 @@ class House:
                     restored[name] = [[[self._air[name] for _ in range(nx)] for _ in range(ny)]
                                       for _ in range(nz)]
                 else:
-                    raise ValueError("Checkpoint air grid does not match this house"…1805 tokens truncated…in self.zones.items()
+                    raise ValueError("Checkpoint air grid does not match this house")
+            self._air_cells = restored
+            self._air = {name: sum(map(sum, (row for layer in grid for row in layer)))
+                         / self._cell_count(name) for name, grid in self._air_cells.items()}
+        if self.hydronics.pipe_network:
+            if snapshot.get("pipe_thermal") is not None:
+                self.hydronics.pipe_network.restore_checkpoint(snapshot["pipe_thermal"])
+        if self._boiler_water_c:
+            self._boiler_water_c.update({
+                name: self.hydronics.water[self.sources[name].loop]
+                for name in self._boiler_water_c
+            })
+        self.reset_run_clock()
+
+    @property
+    def indoor_c(self) -> dict[str, float]:
+        return self._air.copy()
+
+    @property
+    def indoor_humidity(self) -> dict[str, float]:
+        return {name: relative_humidity(self._air[name], ratio) for name, ratio in self._moisture.items()}
+
+    @property
+    def water_c(self) -> float | None:
+        return self.hydronics.water.get(self._first_loop)
+
+    @property
+    def return_c(self) -> float | None:
+        return self.hydronics.circuits.get(self._first_loop, {}).get("return_c")
+
+    @property
+    def flow_l_min(self) -> float:
+        return self.hydronics.circuits.get(self._first_loop, {}).get("flow_l_min", 0.0)
+
+    def air_temperature_at(self, room: str, x_m: float, y_m: float, z_m: float) -> float:
+        """Return the nearest modeled air-cell temperature at room-local coordinates."""
+        if room not in self._air_cells:
+            raise KeyError(f"Unknown room: {room}")
+        nx, ny, nz = self._air_grid_shape[room]
+        dx, dy, dz = self._air_cell_size_m[room]
+        ix = min(nx - 1, max(0, int(x_m / dx)))
+        iy = min(ny - 1, max(0, int(y_m / dy)))
+        iz = min(nz - 1, max(0, int(z_m / dz)))
+        return self._air_cells[room][iz][iy][ix]
+
+    def diagnostics(self) -> dict:
+        return {
+            "rooms": {
+                name: {"air_c": self._air[name], "fabric_c": self._fabric[name],
+                       "fabric_core_c": self._fabric_core[name],
+                       "contents_c": self._contents[name],
+                       "humidity_pct": relative_humidity(self._air[name], self._moisture[name]),
+                       "air_cells_c": [[row.copy() for row in layer]
+                                       for layer in self._air_cells[name]],
+                       "air_grid": {
+                           "shape": list(self._air_grid_shape[name]),
+                           "cell_size_m": list(self._air_cell_size_m[name]),
+                           "z_centers_m": [(index + .5) * self._air_cell_size_m[name][2]
+                                           for index in range(self._air_grid_shape[name][2])],
+                       },
+                       "air_currents": self._air_currents[name],
+                       **self._room_flux.get(name, {})}
+                for name in self.zones
+            },
+            "circuits": {
+                name: {**self.hydronics.circuits.get(name, {}), "supply_c": temperature,
+                       "target_c": self.hydronics.loops[name].target_c}
+                for name, temperature in self.hydronics.water.items()
+            },
+            "emitters": self.hydronics.details,
+            "pipes": self.hydronics.pipe_network.details if self.hydronics.pipe_network else {},
+            "sources": self._source_details,
+            "outdoor_units": self._outdoor_details,
+            "heat_exchangers": self._exchanger_details,
+            "balance": self._balance,
+            "heat_links": self._heat_links,
+        }
+
+    @property
+    def source_starts(self) -> dict[str, int]:
+        return {name: state.starts for name, state in self._source_state.items()}
+
+    @property
+    def source_details(self) -> Mapping[str, dict]:
+        return self._source_details
+
+    @property
+    def source_heat_kw(self) -> dict[str, float]:
+        return self._source_heat_kw.copy()
+
+    def advance(
+        self,
+        duration_s: float,
+        conditions: Conditions,
+        plan: ControlPlan,
+        available_sources: frozenset[str],
+    ) -> None:
+        _check((duration_s,), positive=True)
+        _check((conditions.solar_kw_m2, conditions.occupied_gains_kw, conditions.appliance_kw,
+                conditions.solar_pv_kw, *conditions.ventilation_kw_k.values(),
+                *conditions.door_exchange_kw_k.values(), *conditions.radiant_opening_m2.values(),
+                *conditions.dhw_draw_l_min.values()))
+        if conditions.heat_pump_price_kwh is not None:
+            _check((conditions.heat_pump_price_kwh,))
+        if not all(map(isfinite, (conditions.outdoor_c, conditions.electricity_price_kwh,
+                                  conditions.gas_price_kwh))):
+            raise ValueError("Weather and tariffs must be finite")
+        if not 0 <= conditions.outdoor_humidity_pct <= 100:
+            raise ValueError("Outdoor humidity must be between zero and 100")
+        for name, fraction in plan.indoor_fans.items():
+            if name not in self.sources or self.sources[name].direct_zone is None or not 0 <= fraction <= 1:
+                raise ValueError("Invalid indoor fan command")
+        for name, angles in plan.airflow_angles_deg.items():
+            if (name not in self.sources or self.sources[name].direct_zone is None or len(angles) != 2
+                    or not all(isfinite(value) for value in angles)
+                    or not -90 <= angles[0] <= 90 or not -60 <= angles[1] <= 75):
+                raise ValueError("Invalid A/C airflow direction")
+        if plan.sources.keys() - self.sources.keys() or plan.valves.keys() - self.equipment.valves:
+            raise ValueError("Control plan references an unknown actuator")
+        for fraction in plan.valves.values():
+            if not 0 <= fraction <= 1:
+                raise ValueError("Valve commands must be between zero and one")
+        for name, fraction in plan.sources.items():
+            source = self.sources[name]
+            if not (-1 if source.reversible else 0) <= fraction <= 1:
+                raise ValueError(f"Invalid request for {name}")
+            if not source.modulating and fraction not in (-1, 0, 1):
+                raise ValueError(f"Source {name} only accepts on/off commands")
+
+        for values, capability, lower, upper in (
+            (plan.room_setpoints_c, "room_setpoint_control", 10, 35),
+            (plan.fan_fractions, "fan_control", 0, 1),
+            (plan.water_setpoints_c, "water_setpoint_control", 20, 80),
+        ):
+            for name, value in values.items():
+                if name not in self.sources or not getattr(self.sources[name], capability) or not lower <= value <= upper:
+                    raise ValueError(f"Invalid {capability} request for {name}")
+        dynamic_rate = {
+            name: conditions.ventilation_kw_k.get(name, 0.0) for name in self.zones
+        }
+        for (first, second), conductance in conditions.door_exchange_kw_k.items():
+            dynamic_rate[first] += conductance
+            dynamic_rate[second] += conductance
+        max_rate = self._max_rate + max(
+            dynamic_rate[name] / zone.air_capacity for name, zone in self.zones.items()
         )
         fan_fraction = max(plan.indoor_fans.values(), default=0.0)
         if fan_fraction:
@@ -1077,8 +1218,8 @@ class House:
                     if hold["latched"]:
                         water_target = 60.0
                         limit_kw = source.max_heat_kw
-                        request = max(0.0, min(source.max_heat_kw, -existing_heat))
-                        request = request / source.max_heat_kw if source.max_heat_kw else 0.0
+                        requested_heat = max(0.0, min(source.max_heat_kw, -existing_heat))
+                        request = requested_heat / source.max_heat_kw if source.max_heat_kw else 0.0
                         stopped = not request
                     else:
                         limit_kw = min(limit_kw, max(0.0, headroom - existing_heat))
