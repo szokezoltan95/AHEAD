@@ -116,6 +116,9 @@ class MqttHouse:
                 fields["output"] = {"label": "Manual output request", "min": 1, "max": 100, "step": 1, "unit": "%"}
             if actuator.key in self._water_targets:
                 fields["water_target"] = {"label": "Water target", "min": 20, "max": 80, "step": 1, "unit": "°C"}
+            if self.scenario.house.sources[actuator.key].fuel == "gas":
+                fields["boiler_function"] = {"label": "Boiler function", "options": ["Normal", "Hold 60°C after first reaching it"]}
+                self.scenario.house.boiler_hold_60.setdefault(actuator.key, None)
             self.remote_devices[key] = {"group": "sources", "device": actuator.key, "fields": fields}
         self._available: frozenset[str] = frozenset()
         self._lock = Lock()
@@ -157,6 +160,14 @@ class MqttHouse:
                 request = actuator.parse(payload)
                 if not request:
                     raise ValueError("Use Off to stop the heat request")
+            elif field == "boiler_function":
+                if value == "Normal":
+                    self.scenario.house.boiler_hold_60[actuator.key] = None
+                elif value == "Hold 60°C after first reaching it":
+                    self.scenario.house.boiler_hold_60[actuator.key] = {"latched": False}
+                else:
+                    raise ValueError("Unsupported boiler function")
+                return
             else:
                 actuator = self._water_targets[actuator.key]
                 request = actuator.parse(payload)
