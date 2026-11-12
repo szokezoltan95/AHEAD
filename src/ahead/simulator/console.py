@@ -136,6 +136,11 @@ class Console:
                 # The physics diagnostics are shared with the simulator, so copy
                 # the selected entry before adding controller-specific fields.
                 state[group] = state[group] | {unit["device"]:state[group][unit["device"]] | {"controller" if unit["kind"] == "hydronic" else "thermostat": unit}}
+        for key, device in self.remote_devices.items():
+            if device["group"] != "sources" or "boiler_function" not in device["fields"]:
+                continue
+            source_state = state["sources"].get(device["device"], {})
+            remote_state[key] = {"boiler_function": source_state.get("boiler_function")}
         if sample.end_s - self.history_last_s >= 60:
             values = {f"room:{n}": v["air_c"] for n,v in state["rooms"].items()}
             values.update({f"water:{n}":v.get("supply_c") for n,v in state["circuits"].items()})

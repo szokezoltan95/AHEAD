@@ -1308,6 +1308,10 @@ class House:
                 "input_kw": power + fan_kw, "fuel": source.fuel, "efficiency": efficiency, "status": status,
                 "fan_kw": fan_kw, "latent_cooling_kw": latent_kw, "sensible_heat_kw": sensible,
                 "starts": self._source_state[name].starts,
+                "boiler_function": ("Hold 60°C after first reaching it"
+                                    if self.boiler_hold_60.get(name) is not None else "Normal"),
+                "boiler_hold_latched": bool(self.boiler_hold_60.get(name)
+                                             and self.boiler_hold_60[name]["latched"]),
                 "heat_pump_tariff": source.heat_pump_tariff,
                 "pump_on": bool(source.direct_zone is None and pump_enabled.get(loop_name, False)),
                 "pump_kw": source.pump_kw if source.direct_zone is None and pump_enabled.get(loop_name, False) else 0,
